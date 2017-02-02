@@ -1,0 +1,11 @@
+TODO yet... no particular order.
+
+Next item: 25
+
+
+
+6. TESTS...
+20. Need to offer some sort of batch_size arg to functions, so can pass full shmem array even when it's only partially full of data....also think about how user can fill it in easily: shmem[:] = func(), when shmem is not the same size (in 0-th dimension) as the output of func.
+22. Something about separate CPU cores for different GPUs?  This might wait until working a dual-socket machine.
+23. Sliced functions for when data batch is too large for GPU
+24. does Theano expose input checking for functions and/or input variables?
