@@ -1,5 +1,5 @@
 
-RUN_BOTH = False
+RUN_BOTH = True
 
 import theano
 import theano.tensor as T
