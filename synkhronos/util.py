@@ -67,9 +67,10 @@ def build_sync(n_gpu):
         workers_OK=mp.Value(ctypes.c_bool, True),  # (not RawValue)
         n_user_fcns=mp.RawValue('i', 0),
         distributed=mp.RawValue(ctypes.c_bool, False),
-        exec_type=mp.RawValue('i', 0),
+        exec_ID=mp.RawValue('i', 0),
         func_ID=mp.RawValue('i', 0),
         comm_ID=mp.RawValue('i', 0),
+        op_ID=mp.RawValue('i', 0),
         n_shared=mp.RawValue('i', 0),
         barriers=barriers,
     )

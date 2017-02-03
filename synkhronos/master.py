@@ -104,7 +104,7 @@ class Function(SynkFunction):
         input_datas = self._order_inputs(g.inputs, args, kwargs)
         input_shmems = self._update_shmems(g.inputs, input_datas)
         output_set = self._share_output_subset(output_subset)
-        g.sync.exec_type.value = FUNCTION
+        g.sync.exec_ID.value = FUNCTION
         g.sync.func_ID.value = self._ID
         g.sync.barriers.exec_in.wait()
         my_inputs = self._get_my_inputs(g.inputs)
@@ -312,7 +312,7 @@ def gpu_comm_prep(comm_ID, functions=None, shared_vars=None,
     if g.closed:
         raise RuntimeError("synk already closed--cannot call comm \
             functions.")
-    g.sync.exec_type.value = GPU_COMM
+    g.sync.exec_ID.value = GPU_COMM
     g.sync.comm_ID.value = comm_ID
     shared_IDs = get_shared_IDs(g.shareds, functions, shared_vars)
     n_shared = len(shared_IDs)
@@ -322,7 +322,7 @@ def gpu_comm_prep(comm_ID, functions=None, shared_vars=None,
         op_ID = check_op(op)
         avg = op in AVG_ALIASES
         op = "sum" if avg else op
-        g.sync.comm_op.value = op_ID
+        g.sync.op_ID.value = op_ID
         return shared_IDs, op, avg
     else:
         return shared_IDs
@@ -418,7 +418,7 @@ def scatter(shared_var, sources):
             shared_var.set_value(src)
         else:
             g.shareds.shmems[shared_ID][rank][:] = src
-    g.sync.exec_type.value = CPU_COMM
+    g.sync.exec_ID.value = CPU_COMM
     g.sync.comm_id.value = SCATTER
     g.sync.shared_IDs[0] = shared_ID  # (can only to one per call)
     g.sync.barriers.exec_in.wait()

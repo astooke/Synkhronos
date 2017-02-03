@@ -116,9 +116,10 @@ class Inputs(SynkVariables):
             self.ndims.append(var.type.ndim)
         return var_ID
 
-    def register_func(self, theano_function):
+    def register_func(self, f):
         input_IDs = list()
-        for theano_In in theano_function.inv_finder.values():
+        n_vars = len(f.inv_finder)
+        for theano_In in [f.inv_finder[f.finder[i]] for i in range(n_vars)]:
             if not theano_In.implicit:  # (then it is explicit input)
                 var = theano_In.variable
                 input_IDs.append(self.include(var))
@@ -171,15 +172,23 @@ class Inputs(SynkVariables):
     def check_inputs(self, input_IDs, ordered_inputs):
         """ Master-only """
         for idx, (input_ID, input_data) in enumerate(zip(input_IDs, ordered_inputs)):
+            dtype = self.dtypes[input_ID]
             if not isinstance(input_data, np.ndarray):
-                input_data = np.asarray(input_data, dtype=self.dtypes[input_ID])
+                input_data = np.asarray(input_data, dtype=dtype)  # TODO: maybe not force blindly?
                 ordered_inputs[idx] = input_data
-            elif input_data.dtype != self.dtypes[input_ID]:
-                raise TypeError("Wrong data type provided for input ", idx,
-                    ": ", input_data.dtype)
+            elif input_data.dtype != dtype:
+                common_dtype = np.find_common_type([input_data.dtype, dtype], [])
+                if common_dtype == dtype:
+                    input_data = input_data.astype(dtype)
+                else:
+                    print("input_ID: ", input_ID, "self.dtypes: ", self.dtypes)
+                    raise TypeError("Non up-castable data type provided for "
+                        "input {}, received: {}, expected: {}".format(idx,
+                            input_data.dtype, self.dtypes[input_ID]))
+                ordered_inputs[idx] = input_data
             if input_data.ndim != self.ndims[input_ID]:
-                raise TypeError("Wrong data ndim provided for input ", idx,
-                    ": ", input_data.ndim)
+                raise TypeError("Wrong data ndim provided for input "
+                    "{}: {}".format(idx, input_data.ndim))
         return ordered_inputs  # (now as numpy arrays)
 
 
@@ -263,8 +272,11 @@ class Shareds(SynkVariables):
         return sync
 
     def set_avg_facs(self, n_gpu):
-        for avg_fac in self.avg_facs:
-            avg_fac.set_value(1 / n_gpu)
+        for avg_fac, dtype in zip(self.avg_facs, self.dtypes):
+            if "int" in dtype:
+                avg_fac.set_value(1)  # int types do not support averaging.
+            else:
+                avg_fac.set_value(1 / n_gpu)
 
     def unpack_avg_facs(self):
         """ Worker only (and only if later changing avg_fac dynamically) """
@@ -291,6 +303,7 @@ class Outputs(struct):
         super().__init__(**kwargs)
         self.vars = list()
         self.gpu_vars = list()
+        self.dtypes = list()
         self.to_cpu = list()
         self.avg_funcs = list()
         self.avg_facs = list()
@@ -307,6 +320,7 @@ class Outputs(struct):
             self.to_cpu.append(to_cpu)
             gpu_var = var.transfer(None)
             self.gpu_vars.append(gpu_var)
+            self.dtypes.append(var.type.dtype)
             avg_fac = theano.shared(np.array(1, dtype=var.type.dtype))
             avg_otpt = (avg_fac * gpu_var).transfer(None)
             avg_func = theano.function([gpu_var], avg_otpt)
@@ -330,8 +344,11 @@ class Outputs(struct):
             return gpu_outputs, output_IDs
 
     def set_avg_facs(self, n_gpu):
-        for avg_fac in self.avg_facs:
-            avg_fac.set_value(1 / n_gpu)
+        for avg_fac, dtype in zip(self.avg_facs, self.dtypes):
+            if "int" in dtype:
+                avg_fac.set_value(1)
+            else:
+                avg_fac.set_value(1 / n_gpu)
 
 
 ###############################################################################

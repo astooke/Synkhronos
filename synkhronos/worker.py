@@ -41,7 +41,7 @@ class Function(SynkFunction):
         my_inputs = list()
         for input_ID, scatter in zip(self._input_IDs, self._inputs_scatter):
             if g_inputs.sync.tags[input_ID] != g_inputs.tags[input_ID]:
-                # then a new shmem has been allocated, need to get it.
+                # A new shmem has been allocated, need to get it.
                 shape = g_inputs.sync.shapes[input_ID][:]
                 tag_ID = g_inputs.sync.tags[input_ID]
                 g_inputs.alloc_shmem(input_ID, shape, tag_ID, False)
@@ -116,8 +116,7 @@ def do_gpu_comms(sync, g_shareds, gpu_comm, master_rank):
     shared_IDs = g_shareds.sync.shared_IDs[:sync.n_shared.value]
     comm_ID = sync.comm_ID.value
     if comm_ID in [REDUCE, ALL_REDUCE]:
-        op = WORKER_OPS.get(sync.comm_op.value, None)
-        assert op is not None
+        op = WORKER_OPS[sync.op_ID.value]
         avg = op in AVG_ALIASES
         op = "sum" if avg else op
     if comm_ID == ALL_GATHER:
@@ -184,11 +183,11 @@ def worker_exec(rank, n_gpu, master_rank, sync):
         if sync.quit.value:
             atexit.unregister(error_close)
             return  # (exit successfully)
-        if sync.exec_type.value == FUNCTION:
+        if sync.exec_ID.value == FUNCTION:
             synk_functions[sync.func_ID.value](sync, g_inputs, gpu_comm)
-        elif sync.exec_type.value == GPU_COMM:
+        elif sync.exec_ID.value == GPU_COMM:
             do_gpu_comms(sync, g_shareds, gpu_comm, master_rank)
-        elif sync.exec_type.value == CPU_COMM:
+        elif sync.exec_ID.value == CPU_COMM:
             do_cpu_comms(sync, g_shareds, rank)
         else:
             raise RuntimeError("Unrecognized execution type in worker.")
