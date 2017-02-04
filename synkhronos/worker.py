@@ -8,6 +8,7 @@ This file has everything unique to the workers.
 import os
 import pickle
 from threading import BrokenBarrierError
+import atexit
 
 from .variables import Inputs, Shareds, SynkFunction
 from .common import use_gpu
@@ -109,21 +110,22 @@ def receive_distribution(rank, n_gpu, sync):
         unpack_functions(theano_functions, sync_dict, sync.n_user_fcns.value)
     g_inputs.build_sync(len(synk_functions), n_gpu, False)
     g_shareds.build_sync(False)
+    sync.barriers.distribute_out.wait()
     return synk_functions, g_inputs, g_shareds
 
 
 def do_gpu_comms(sync, g_shareds, gpu_comm, master_rank):
     shared_IDs = g_shareds.sync.shared_IDs[:sync.n_shared.value]
     comm_ID = sync.comm_ID.value
-    if comm_ID in [REDUCE, ALL_REDUCE]:
-        op = WORKER_OPS[sync.op_ID.value]
-        avg = op in AVG_ALIASES
-        op = "sum" if avg else op
     if comm_ID == ALL_GATHER:
         src = g_shareds.gpuarrays[shared_IDs[0]]
         dest = g_shareds.gpuarrays[shared_IDs[1]]
         gpu_comm.all_gather(src, dest)
     else:
+        if comm_ID in [REDUCE, ALL_REDUCE]:
+            op = WORKER_OPS[sync.op_ID.value]
+            avg = op in AVG_ALIASES
+            op = "sum" if avg else op
         for shared_ID in shared_IDs:
             src = g_shareds.gpuarrays[shared_ID]
             if comm_ID == BROADCAST:
@@ -175,7 +177,6 @@ def worker_exec(rank, n_gpu, master_rank, sync):
     Function.rank = rank  # endow all functions
     Function.master_rank = master_rank
 
-    import atexit
     atexit.register(error_close, sync)
 
     while True:

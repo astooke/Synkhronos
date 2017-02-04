@@ -292,18 +292,24 @@ def main(model='mlp', num_epochs=500):
         train_err = 0
         train_batches = 0
         start_time = time.time()
-        for batch in iterate_minibatches(X_train, y_train, 500, shuffle=True):
+        train_fn_time = 0
+        for batch in iterate_minibatches(X_train, y_train, 1000, shuffle=True):
             inputs, targets = batch
+            train_fn_start_time = time.time()
             train_err += train_fn(inputs, targets)
+            train_fn_time += time.time() - train_fn_start_time
             train_batches += 1
 
         # And a full pass over the validation data:
         val_err = 0
         val_acc = 0
         val_batches = 0
-        for batch in iterate_minibatches(X_val, y_val, 500, shuffle=False):
+        val_fn_time = 0
+        for batch in iterate_minibatches(X_val, y_val, 1000, shuffle=False):
             inputs, targets = batch
+            val_fn_start_time = time.time()
             err, acc = val_fn(inputs, targets)
+            val_fn_time += time.time() - val_fn_start_time
             val_err += err
             val_acc += acc
             val_batches += 1
@@ -311,6 +317,8 @@ def main(model='mlp', num_epochs=500):
         # Then we print the results for this epoch:
         print("Epoch {} of {} took {:.3f}s".format(
             epoch + 1, num_epochs, time.time() - start_time))
+        print("Train function time: {:.3f}s".format(train_fn_time))
+        print("Validation function time: {:.3f}s".format(val_fn_time))
         print("  training loss:\t\t{:.6f}".format(train_err / train_batches))
         print("  validation loss:\t\t{:.6f}".format(val_err / val_batches))
         print("  validation accuracy:\t\t{:.2f} %".format(
@@ -358,3 +366,4 @@ if __name__ == '__main__':
         if len(sys.argv) > 2:
             kwargs['num_epochs'] = int(sys.argv[2])
         main(**kwargs)
+

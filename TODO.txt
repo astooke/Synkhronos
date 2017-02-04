@@ -9,3 +9,4 @@ Next item: 25
 22. Something about separate CPU cores for different GPUs?  This might wait until working a dual-socket machine.
 23. Sliced functions for when data batch is too large for GPU
 24. does Theano expose input checking for functions and/or input variables?
+25. change inputs order to gpu comm funcs so shared_vars can be used without keyword

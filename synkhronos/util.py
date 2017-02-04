@@ -11,7 +11,7 @@ from .common import REDUCE_OPS, AVG_ALIASES
 from .variables import struct, SynkFunction
 
 
-COLLECT_MODES = ["reduce", "gather"]
+COLLECT_MODES = ["reduce", "gather", None]
 
 
 ###############################################################################
@@ -57,6 +57,7 @@ def build_sync(n_gpu):
     barriers = struct(
         gpu_inits=[mp.Barrier(n_gpu) for _ in range(3)],
         distribute=mp.Barrier(n_gpu),
+        distribute_out=mp.Barrier(n_gpu),
         delete_pkl=mp.Barrier(n_gpu - 1),
         exec_in=mp.Barrier(n_gpu),
         exec_out=mp.Barrier(n_gpu),
