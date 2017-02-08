@@ -3,6 +3,7 @@
 Classes for managing variables.
 Inputs and Shareds used in both master and workers.
 Outputs used only in master.
+SynkFunction is base class for master and worker Function classes.
 """
 
 # import gtimer as gt
