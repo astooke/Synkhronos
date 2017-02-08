@@ -12,9 +12,11 @@ Synkhronos is a Python tool for accelerating computation of Theano functions whe
 
 Acceleration is possible with multiple GPUs or even in multi-core CPUs, where explicit use of data parallelism outperforms multi-threaded BLAS operations such as in MKL.  The current version supports only multi-GPU use (CPU support forthcoming), and requires use of Theano's new GPU back-end.
 
-The aim of this package is to minimize change in user code while leveraging multiple compute devices.  Construct Theano variables and graphs as usual, and simply build functions through this package rather than directly through Theano.  All parallelism is automated and hidden from view.  The only additional algorithmic consideration is communication over shared variables.  A distinct version of each one exists on each GPU, so collective communications, such as broadcast, all-reduce, and scatter, are provided to manage workers' values.  This must be done manually, as Theano function updates apply only locally within the worker.
+The aim of this package is to minimize change in user code while leveraging multiple compute devices.  Construct Theano variables and graphs as usual, and simply build functions through this package rather than directly through Theano.  All parallelism is automated and hidden from view.  Workers simply wait for a signal from the master, and they only perform the same function the master is performing and all at the same time.
 
-Achieving the best speedup may require one implementation change.  Distributing data to the workers is achieved through shared memory (akin to multiprocessing's shared memory); it can be advantageous to manually write data to this memory at an opportune time, rather than waiting for synkhronos to do it internally (examples on the following pages).
+The only additional algorithmic consideration is communication over shared variables.  A distinct version of each one exists on each GPU, so collective communications, such as broadcast, all-reduce, and scatter, are provided to manage workers' values.  This must be done manually, as Theano function updates apply only locally within the worker.
+
+Achieving the best speedup may require one implementation consideration.  Distributing data to the workers is achieved through shared memory (akin to multiprocessing's shared memory).  It can be advantageous to manually write data to this memory at an opportune time, rather than waiting for synkhronos to do it internally, which results in a potentially time-consuming copy operation.  Examples in the following pages show how to do this.
 
 This package is for single-node computing; underlying it is ``multiprocessing``, not ``MPI``.
 
@@ -26,6 +28,7 @@ Contents:
 
    pages/installation.rst
    pages/intro_example.rst
+
    pages/functions.rst
 
 
