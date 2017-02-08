@@ -52,7 +52,7 @@ g = struct(
 
 
 class Function(SynkFunction):
-    """ Function docstring """
+    """ TODO: Function docstring """
 
     _n_gpu = None
     _master_rank = None
@@ -267,14 +267,40 @@ def function(inputs, outputs=None,
              broadcast_inputs=None, scatter_inputs=None,
              **kwargs):
     """
-    Call this in the master process when normally creating a theano function.
+    Use when creating a Theano function instead of ``theano.function``.
 
-    What does it need to do:
-    1. Create & compile theano function.
-    a. Register this function to be pickled later (or just do it now?).
-    2. Register the inputs to be made into mp shared variables. (well, no, they
-    already will be shared variables, but somehow associate them?)
-    a. maybe have the user also input the shared variables here.
+    ``collect_modes`` and ``reduce_ops`` can be single strings or lists which
+    determine how each output is handled.  ``[None]`` is a valid entry, which
+    results in no communication from workers to master.  (In the future, this
+    will only be the default behavior for the function, but will be possible to
+    overrule when calling.)
+
+    Use either ``broadcast_inputs`` or ``scatter_inputs`` to list the variables
+    in either category; the remainder will do the opposite.  If nothing is
+    provided, all inputs are scattered.  Scattering is performed by dividing the
+    data evenly along the 0-th dimension.
+
+    Inputs and outputs need not be variables transferred to the GPU by the user.
+    Internally, synkhronos will apply these transfers so that all outputs remain
+    on their respective worker GPU, so that data is collected to the master GPU
+    via GPU-comms.  In the end, the outputs will be returned to the CPU in the
+    master process only.  If the user provides any outputs already appended
+    with a transfer to remain on the GPU, they will be left there in the master.
+
+    Args:
+        inputs (var): as ``inputs`` in ``theano.function``
+        outputs (None, optional): as ``outputs`` in ``theano.function``
+        collect_modes (str, list, optional): default behaviors; "gather" or "reduce"
+        reduce_ops (str, list, optional): default behaviors; e.g. "sum", "prod", "min", "max", "avg"
+        broadcast_inputs (None, optional): list of vars or names of inputs to broadcast
+        scatter_inputs (None, optional): list of vars or names of inputs to scatter
+        **kwargs (TYPE): passed directly to ``Theano.function``
+
+    Raises:
+        RuntimeError: If not yet forked or if already distributed.
+
+    Returns:
+        SynkFunction: Callable like a Theano function.
     """
     if not g.forked:
         raise RuntimeError("Must fork before making functions for GPU.")
@@ -338,8 +364,17 @@ def gpu_comm_prep(comm_ID, functions=None, shared_vars=None,
 #                       User functions                                        #
 
 
-def broadcast(functions=None, shared_vars=None):
-    """ broadcast docstring """
+def broadcast(shared_vars=None, functions=None):
+    """GPU-comm: broadcast values from master to workers.
+
+    In all multi-variable GPU-comm functions, the default behavior if no
+    variables and no functions are provided is to call the operation on all
+    shared variables in the session.
+
+    Args:
+        shared_vars (None, optional): names or vars to be broadcast
+        functions (None, optional): functions to have all shared vars broadcast
+    """
     shared_IDs = gpu_comm_prep(BROADCAST, functions, shared_vars)
     g.sync.barriers.exec_in.wait()
     for shared_ID in shared_IDs:
@@ -348,8 +383,24 @@ def broadcast(functions=None, shared_vars=None):
     exec_out_check(g.sync)
 
 
-def gather(functions=None, shared_vars=None, dest=None, nd_up=None):
-    """ gather docstring """
+def gather(shared_vars=None, functions=None, dest=None, nd_up=None):
+    """GPU-comm: gather values from workers into master.
+
+    (Calls all_gather, but results are ignored in workers--can't have new shared
+    variables in them.)
+
+    Args:
+        shared_vars (None, optional): names or vars to gather
+        functions (None, optional): functions to have all shared vars gathered
+        dest (None, optional): GPU-array to write result (only if one var)
+        nd_up (None, optional): Number of additional dimensions in result
+
+    Raises:
+        ValueError: Description
+
+    Returns:
+        List of GPUArrays, if no destination provided.
+    """
     shared_IDs = gpu_comm_prep(GATHER, functions, shared_vars)
     if len(shared_IDs) > 1 and dest is not None:
         raise ValueError("When specifying destination, can only gather one var.")
@@ -364,8 +415,26 @@ def gather(functions=None, shared_vars=None, dest=None, nd_up=None):
         return results
 
 
-def reduce(functions=None, shared_vars=None, op="avg", in_place=True, dest=None):
-    """ reduce docstring """
+def reduce(shared_vars=None, functions=None, op="avg", in_place=True, dest=None):
+    """GPU-comm: workers reduce values to master only.
+
+    Can only use destination when reducing a single shared variable.  In-place
+    will overwrite the values of all shared variables involed (in the master
+    only), otherwise will return new GPU-arrays.
+
+    Args:
+        shared_vars (None, optional): names or vars to be reduced
+        functions (None, optional): functions to have all shared vars reduced
+        op (str, optional): e.g. "sum, prod, min, max, avg"
+        in_place (bool, optional): overwrite result into shared var source
+        dest (None, optional): GPU-array to write result (only if one var)
+
+    Raises:
+        ValueError: If infeasible inputs.
+
+    Returns:
+        List of GPUArrays, if no destination provided and not in-place.
+    """
     shared_IDs, op, avg = gpu_comm_prep(REDUCE, functions, shared_vars, True, op)
     if len(shared_IDs) > 1 and dest is not None:
         raise ValueError("When specifying desination, can only reduce one var.")
@@ -386,8 +455,14 @@ def reduce(functions=None, shared_vars=None, op="avg", in_place=True, dest=None)
         return results
 
 
-def all_reduce(functions=None, shared_vars=None, op="avg"):
-    """ Only in-place allowed """
+def all_reduce(shared_vars=None, functions=None, op="avg"):
+    """GPU-comm: master and workers all reduce values, in-place only.
+
+    Args:
+        shared_vars (None, optional): names or vars to be reduced
+        functions (None, optional): functions to have all shared vars reduced
+        op (str, optional): e.g. "sum, prod, min, max, avg"
+    """
     shared_IDs, op, avg = \
         gpu_comm_prep(ALL_REDUCE, functions, shared_vars, True, op)
     g.sync.barriers.exec_in.wait()
@@ -401,7 +476,16 @@ def all_reduce(functions=None, shared_vars=None, op="avg"):
 
 
 def all_gather(source, dest):
-    """ only one variable allowed, and must provide dest """
+    """GPU-comm: master and workers all gather values into their local vars.
+
+    Only one Theano shared variable can be used for the source, and another
+    Theano shared variable of the right shape must already exist for use as the
+    destination (since no new shared variables can be created in workers).
+
+    Args:
+        source (name or var): shared variable to be gathered
+        dest (name or var): shared variable to receive values in
+    """
     shared_IDs = gpu_comm_prep(ALL_GATHER, shared_vars=[source, dest])
     g.sync.barriers.exec_in.wait()
     src = g.shareds.gpuarrays[shared_IDs[0]]
@@ -418,7 +502,20 @@ def all_gather(source, dest):
 
 
 def scatter(shared_var, sources):
-    """ scatter docstring """
+    """CPU-comm: Scatter shared variable values across master and workers.
+
+    This collective communication is performed on the CPU.  Values from arrays
+    in `sources` are copied into synkhronos shared memory, and workers use these
+    values to set their respective GPU variable values.  Must include entry for
+    master.  All arrays must be the same shape as the Theano shared variable.
+
+    TODO: return the shared memory used for this operation so user can write to
+    it.
+
+    Args:
+        shared_var (name or var): Theano shared variable to have value set.
+        sources (list): List of arrays to be used in shared_var.set_value().
+    """
     shared_var, shared_ID = check_shared_var(g.shareds, shared_var)
     sources = check_scatter_sources(g.shareds, g.n_gpu, sources, shared_ID)
     if g.shareds.shmems[shared_ID] is None:
@@ -443,7 +540,23 @@ def scatter(shared_var, sources):
 
 
 def fork(n_gpu=None, master_rank=0):
-    """ fork docstring """
+    """Fork a python sub-process for each additional GPU and initialize.
+
+    Call this function before building any Theano variables.  (Theano must be
+    configured to ipmort to CPU only.)  Initializes one GPU on each process,
+    including the master, and initializes GPU collective communications via
+    pygpu & NVIDIA NCCL.
+
+    Args:
+        n_gpu (None, optional): Number of GPUs to use (default is all)
+        master_rank (int, optional): default is 0
+
+    Raises:
+        RuntimeError: If already forked or fails to initialize.
+
+    Returns:
+        int: number of GPUs using.
+    """
     if g.forked:
         raise RuntimeError("Only fork once.")
     from .worker import worker_exec
@@ -480,7 +593,24 @@ def fork(n_gpu=None, master_rank=0):
 
 
 def distribute():
-    """ distributed docstring """
+    """Sets up theano functions from master on workers.
+
+    Pickles all theano functions built with this package (i.e. using
+    ``synkhronos.function()``) into one file, which workers unpickle.  Theano's
+    behavior is to include all shared variable values in the file.  Workers are
+    aware of correspondences among input and shared variables used in multiple
+    functions, for efficient memory usage.  Functions are compiled in the master
+    only.
+
+    In the future, distribution will happen automatically, lazily at the time of
+    any function call when it is necessary.  It will remain optional for the
+    user to call, as it may be time-consuming.
+
+    The pickle file is automatically deleted by a worker.
+
+    Raises:
+        RuntimeError: If not yet forked or if already distributed.
+    """
     if not g.forked:
         raise RuntimeError("Need to fork before distributing functions.")
     if g.distributed:
@@ -512,7 +642,8 @@ def distribute():
 
 
 def close():
-    """ close docstring. """
+    """Close workers and join their processes.  Called automatically on exit.
+    """
     if not g.forked:
         print("Warning: Calling close() before forking has no effect.")
     elif g.closed:

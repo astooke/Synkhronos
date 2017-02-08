@@ -3,6 +3,10 @@
    You can adapt this file completely to your liking, but it should at least
    contain the root `toctree` directive.
 
+*---Documentation Under Construction---*
+========================================
+
+
 Synkhronos
 ==========
 A Python Extension for Data Parallelism
@@ -28,7 +32,6 @@ Contents:
 
    pages/installation.rst
    pages/intro_example.rst
-
    pages/functions.rst
 
 
