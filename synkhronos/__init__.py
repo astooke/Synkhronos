@@ -1,12 +1,11 @@
 
 
-from .master import function
-from .master import broadcast, gather, reduce, all_reduce, all_gather
-from .master import scatter
-from .master import fork, distribute, close
+from synkhronos.master import function
+from synkhronos.master import broadcast, gather, reduce, all_reduce, all_gather
+from synkhronos.master import scatter
+from synkhronos.master import fork, distribute, close
 
 
 import sys
 sys.setrecursionlimit(50000)  # (workaround for pickling functions)
-
 del sys
