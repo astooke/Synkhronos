@@ -4,7 +4,7 @@ Classes for managing variables.
 Inputs and Shareds used in both master and workers.
 Outputs used only in master.
 """
-import ipdb
+
 import gtimer as gt
 
 import ctypes
