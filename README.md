@@ -1,4 +1,4 @@
 # Synkhronos
 Theano Extension for Data Parallelism
 
-Documentation forthcoming.
+Please see documentation at: http://synkhronos.readthedocs.io/
