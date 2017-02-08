@@ -4,8 +4,8 @@ Run theano functions in parallel on multiple GPUs (data parallelism).
 
 This file has everything exposed to the user.
 """
-
-import gtimer as gt
+# import ipdb
+# import gtimer as gt
 
 import pickle
 import numpy as np
@@ -52,6 +52,7 @@ g = struct(
 
 
 class Function(SynkFunction):
+    """ Function docstring """
 
     _n_gpu = None
     _master_rank = None
@@ -86,7 +87,6 @@ class Function(SynkFunction):
     ###########################################################################
     #                       User callables (use globals g directly)           #
 
-    @gt.wrap
     def __call__(self, *args, **kwargs):
         """
         This needs to:
@@ -106,25 +106,16 @@ class Function(SynkFunction):
         return_shmems = kwargs.pop("return_shmems", False)
         output_subset = kwargs.pop("output_subset", None)
         input_datas = self._order_inputs(g.inputs, args, kwargs)
-        gt.stamp("order_inputs")
         input_shmems = self._update_shmems(g.inputs, input_datas)
-        gt.stamp("update_shmems")
         output_set = self._share_output_subset(output_subset)
-        gt.stamp("output_subset")
         g.sync.exec_ID.value = FUNCTION
         g.sync.func_ID.value = self._ID
         g.sync.barriers.exec_in.wait()
-        gt.stamp("exec_in_wait")
         my_inputs = self._get_my_inputs(g.inputs)
-        gt.stamp("my_inputs")
         my_results = self._call_theano_function(my_inputs, output_subset)  # always a list
-        gt.stamp("my_results")
-        # my_np = [np.asarray(r) for r in my_results]
-        # gt.stamp("numpify_my_results")
+
         results = self._collect_results(g.gpu_comm, my_results, output_set)  # always returns list
-        gt.stamp("results")
         exec_out_check(g.sync)
-        gt.stamp("exec_out_wait")
         if return_shmems:
             results.append(input_shmems)  # append list of results with tuple of shmems
         if len(results) == 1:
@@ -132,6 +123,7 @@ class Function(SynkFunction):
         return results
 
     def get_input_shmems(self, *args, **kwargs):
+        """ doctstring """
         if not g.distributed or g.closed:
             raise RuntimeError("Cannot call this method on inactive synkhronos "
                 "function.")
@@ -165,7 +157,6 @@ class Function(SynkFunction):
     ###########################################################################
     #                     Helpers (not for user)                              #
 
-    @gt.wrap
     def _order_inputs(self, g_inputs, args, kwargs):
         """ Includes basic datatype and ndims checking. """
         if len(args) + len(kwargs) != self._n_inputs:
@@ -189,7 +180,6 @@ class Function(SynkFunction):
         input_datas = g_inputs.check_inputs(self._input_IDs, ordered_inputs)
         return input_datas
 
-    @gt.wrap
     def _share_output_subset(self, output_subset):
         if output_subset != self._previous_output_subset:
             if output_subset is None:
@@ -211,7 +201,6 @@ class Function(SynkFunction):
         output_set = [i for i, x in enumerate(self._output_subset_shmem) if x]
         return output_set
 
-    @gt.wrap
     def _update_shmems(self, g_inputs, input_datas):
         self._update_batch_size(g_inputs, input_datas)
         shmems = list()
@@ -219,7 +208,6 @@ class Function(SynkFunction):
             shmems.append(g_inputs.update_shmem(input_ID, input_data))
         return shmems
 
-    @gt.wrap
     def _update_batch_size(self, g_inputs, input_datas):
         if not any(self._inputs_scatter):
             return  # (all inputs broadcast, no data parallel)
@@ -238,7 +226,6 @@ class Function(SynkFunction):
                             assign_idx[self._master_rank + 1])
             self._previous_batch_size = b_size
 
-    @gt.wrap
     def _get_my_inputs(self, g_inputs):
         s_idx = self._my_idx[0]
         e_idx = self._my_idx[1]
@@ -251,7 +238,6 @@ class Function(SynkFunction):
                 my_inputs.append(g_inputs.shmems[input_ID][:max_idx])
         return my_inputs
 
-    @gt.wrap
     def _collect_results(self, gpu_comm, my_results, output_set):
         results = list()
         for idx, r in zip(output_set, my_results):
@@ -266,9 +252,6 @@ class Function(SynkFunction):
                 raise RuntimeError("Unrecognized collect mode in master "
                     "function: ", mode)
             results.append(r)
-        gt.stamp("comm_funcs")
-        # np_res = [np.asarray(re) for re in results]
-        # gt.stamp("numpyify_result")
         for idx_r, idx in enumerate(output_set):
             mode = self._collect_modes[idx]
             op = self._reduce_ops[idx]
@@ -276,9 +259,6 @@ class Function(SynkFunction):
                 results[idx_r] = self._output_avg_funcs[idx](results[idx_r])
             if self._output_to_cpu[idx]:
                 results[idx_r] = np.array(results[idx_r])
-        gt.stamp("avgs")
-        # np_res = [np.asarray(re) for re in results]
-        # gt.stamp("numpify_avgs")
         return results
 
 
@@ -291,10 +271,10 @@ def function(inputs, outputs=None,
 
     What does it need to do:
     1. Create & compile theano function.
-       a. Register this function to be pickled later (or just do it now?).
+    a. Register this function to be pickled later (or just do it now?).
     2. Register the inputs to be made into mp shared variables. (well, no, they
-       already will be shared variables, but somehow associate them?)
-       a. maybe have the user also input the shared variables here.
+    already will be shared variables, but somehow associate them?)
+    a. maybe have the user also input the shared variables here.
     """
     if not g.forked:
         raise RuntimeError("Must fork before making functions for GPU.")
@@ -359,6 +339,7 @@ def gpu_comm_prep(comm_ID, functions=None, shared_vars=None,
 
 
 def broadcast(functions=None, shared_vars=None):
+    """ broadcast docstring """
     shared_IDs = gpu_comm_prep(BROADCAST, functions, shared_vars)
     g.sync.barriers.exec_in.wait()
     for shared_ID in shared_IDs:
@@ -368,6 +349,7 @@ def broadcast(functions=None, shared_vars=None):
 
 
 def gather(functions=None, shared_vars=None, dest=None, nd_up=None):
+    """ gather docstring """
     shared_IDs = gpu_comm_prep(GATHER, functions, shared_vars)
     if len(shared_IDs) > 1 and dest is not None:
         raise ValueError("When specifying destination, can only gather one var.")
@@ -383,6 +365,7 @@ def gather(functions=None, shared_vars=None, dest=None, nd_up=None):
 
 
 def reduce(functions=None, shared_vars=None, op="avg", in_place=True, dest=None):
+    """ reduce docstring """
     shared_IDs, op, avg = gpu_comm_prep(REDUCE, functions, shared_vars, True, op)
     if len(shared_IDs) > 1 and dest is not None:
         raise ValueError("When specifying desination, can only reduce one var.")
@@ -435,6 +418,7 @@ def all_gather(source, dest):
 
 
 def scatter(shared_var, sources):
+    """ scatter docstring """
     shared_var, shared_ID = check_shared_var(g.shareds, shared_var)
     sources = check_scatter_sources(g.shareds, g.n_gpu, sources, shared_ID)
     if g.shareds.shmems[shared_ID] is None:
@@ -459,6 +443,7 @@ def scatter(shared_var, sources):
 
 
 def fork(n_gpu=None, master_rank=0):
+    """ fork docstring """
     if g.forked:
         raise RuntimeError("Only fork once.")
     from .worker import worker_exec
@@ -495,6 +480,7 @@ def fork(n_gpu=None, master_rank=0):
 
 
 def distribute():
+    """ distributed docstring """
     if not g.forked:
         raise RuntimeError("Need to fork before distributing functions.")
     if g.distributed:
@@ -526,7 +512,7 @@ def distribute():
 
 
 def close():
-    """ Callable by user. """
+    """ close docstring. """
     if not g.forked:
         print("Warning: Calling close() before forking has no effect.")
     elif g.closed:
@@ -553,7 +539,6 @@ def _close():
         for p in g.processes:
             p.join()
         g.closed = True
-    print(gt.report())
 
 
 def exec_out_check(sync):

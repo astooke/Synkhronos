@@ -83,7 +83,7 @@ def build_sync(n_gpu):
 
 
 def get_worker_reduce_ops(synk_functions):
-    reduce_ops_all = [fn.reduce_ops for fn in synk_functions]
+    reduce_ops_all = [fn.reduce_ops.copy() for fn in synk_functions]
     for ops in reduce_ops_all:
         for idx, op in enumerate(ops):
             if op in AVG_ALIASES:

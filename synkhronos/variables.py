@@ -5,7 +5,7 @@ Inputs and Shareds used in both master and workers.
 Outputs used only in master.
 """
 
-import gtimer as gt
+# import gtimer as gt
 
 import ctypes
 import numpy as np
@@ -158,7 +158,6 @@ class Inputs(SynkVariables):
         self.sync = sync
         return sync
 
-    @gt.wrap
     def update_shmem(self, input_ID, input_data):
         """ Master-only """
         shmem = self.shmems[input_ID]
@@ -168,9 +167,7 @@ class Inputs(SynkVariables):
             shmem, tag_ID = self.alloc_shmem(input_ID, shape)
             self.sync.tags[input_ID] = tag_ID
             self.sync.shapes[input_ID][:] = shape
-            gt.stamp("alloc")
             shmem[:input_data.shape[0]] = input_data
-            gt.stamp("mem_copy")
         self.sync.max_idx[input_ID] = input_data.shape[0]  # (in case broadcast)
         return shmem
 
