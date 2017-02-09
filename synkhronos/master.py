@@ -52,7 +52,7 @@ g = struct(
 
 
 class Function(SynkFunction):
-    """ TODO: Function docstring """
+    """ Class of instances returned by ``synkhronos.function()``.  """
 
     _n_gpu = None
     _master_rank = None
@@ -78,24 +78,43 @@ class Function(SynkFunction):
 
     @property
     def name(self):
+        """ Read-only: will be same name as underlying Theano function. """
         return self._name
 
     @property
     def output_to_cpu(self):
+        """ Ready-only: lists whether outputs are returned to CPU. """
         return self._output_to_cpu
 
     ###########################################################################
     #                       User callables (use globals g directly)           #
 
     def __call__(self, *args, **kwargs):
-        """
-        This needs to:
-        1. Share input data.
-        2. Signal to workers to start and what to do.
-        3. Call the local theano function on data.
-        4. Collect result from workers and return it.
+        """ Callable as in Theano function.
 
-        NOTE: Barriers happen INSIDE master function call.
+        When called, Synkhronos functions:
+
+            1. Share input data,
+            2. Signal to workers to start and what to do,
+            3. Call the local theano function on assigned data subset,
+            4. Collect results from workers and return it.
+
+        If an input array is the input shared memory array used internally for
+        that variable (as returned by the ``get_input_shmems()`` method), this
+        function will recognize that and will use the shared memories directly,
+        avoiding the additional memory copy.  To use only a subset of the total
+        batch size (`0-th` dimension) allocated in the shared memory, pass a
+        contiguous slice of the shared memory array starting at the beginning,
+        e.g. ``shmem[:new_batch_size]``.
+
+        Theano function keyword argument ``output_subset`` is supported.
+
+        Args:
+            *args (data): Normal data inputs to Theano function
+            **kwargs (data): Normal data inputs to Theano function
+
+        Raises:
+            RuntimeError: If not distributed or if synkhronos closed.
         """
         if not g.distributed:
             raise RuntimeError("Synkhronos functions have not been distributed "
@@ -123,7 +142,30 @@ class Function(SynkFunction):
         return results
 
     def get_input_shmems(self, *args, **kwargs):
-        """ doctstring """
+        """ Get internal shared memory arrays used for inputs; optionally set.
+
+        This method returns the current shared memory arrays used interally by
+        the function to communicate input data to workers.  Each variable's
+        memory is wrapped in a numpy ndarray.
+
+        Optionally, a full set of function arguments can be provided, which case
+        this method also acts as a setter.  The function's shared memory will be
+        updated exactly the same as when the function is actually called.  Batch
+        size will be recorded internally, and new shared memory will be created
+        if necessary to fit the new data.
+
+        Warning:
+            The underlying shared memory will be reallocated to accommodate
+            larger inputs (built-in 5% pad in size), after which a new shared
+            memory array must be retrieved to write to this function.
+
+        Args:
+            *args (data): Normal data inputs to the Theano function
+            **kwargs (data): Normal data inputs to the Theano function
+
+        Raises:
+            RuntimeError: If functions not distributed or if synkhronos closed.
+        """
         if not g.distributed or g.closed:
             raise RuntimeError("Cannot call this method on inactive synkhronos "
                 "function.")
@@ -137,7 +179,16 @@ class Function(SynkFunction):
         return input_shmems
 
     def as_theano(self, *args, **kwargs):
-        """ Use this to get outputs back on CPU as originally built. """
+        """Call the function in the master process only, as normal Theano.
+
+        This method will return outputs to the CPU if they were originally
+        requested there, unlike using ``function.theano_function()``, which is
+        built to hold all outputs on the GPU.
+
+        Args:
+            *args (data): Normal data inputs to the Theano function
+            **kwargs (data): Normal data inputs to the Theano function
+        """
         results = self._theano_function(*args, **kwargs)
         if not isinstance(results, list):
             results = [results]
@@ -378,7 +429,7 @@ def broadcast(shared_vars=None, functions=None):
     shared_IDs = gpu_comm_prep(BROADCAST, functions, shared_vars)
     g.sync.barriers.exec_in.wait()
     for shared_ID in shared_IDs:
-        src = g.shareds.gpuarrays[shared_ID]
+        src = g.shareds.gpuarrays(shared_ID)
         g.gpu_comm.broadcast(src)
     exec_out_check(g.sync)
 
@@ -407,7 +458,7 @@ def gather(shared_vars=None, functions=None, dest=None, nd_up=None):
     g.sync.barriers.exec_in.wait()
     results = list()
     for shared_ID in shared_IDs:
-        src = g.shareds.gpuarrays[shared_ID]
+        src = g.shareds.gpuarrays(shared_ID)
         r = g.gpu_comm.all_gather(src, dest=dest, nd_up=nd_up)
         results.append(r)
     exec_out_check(g.sync)
@@ -444,7 +495,7 @@ def reduce(shared_vars=None, functions=None, op="avg", in_place=True, dest=None)
     g.sync.barriers.exec_in.wait()
     results = list()
     for shared_ID in shared_IDs:
-        src = g.shareds.gpuarrays[shared_ID]
+        src = g.shareds.gpuarrays(shared_ID)
         dest = src if dest is None and in_place else dest
         results.append(g.gpu_comm.reduce(src, op, dest))
     if avg:
@@ -467,7 +518,7 @@ def all_reduce(shared_vars=None, functions=None, op="avg"):
         gpu_comm_prep(ALL_REDUCE, functions, shared_vars, True, op)
     g.sync.barriers.exec_in.wait()
     for shared_ID in shared_IDs:
-        src = g.shareds.gpuarrays[shared_ID]
+        src = g.shareds.gpuarrays(shared_ID)
         g.gpu_comm.all_reduce(src, op, src)
     if avg:
         for shared_ID in shared_IDs:
@@ -488,8 +539,8 @@ def all_gather(source, dest):
     """
     shared_IDs = gpu_comm_prep(ALL_GATHER, shared_vars=[source, dest])
     g.sync.barriers.exec_in.wait()
-    src = g.shareds.gpuarrays[shared_IDs[0]]
-    dest = g.shareds.gpuarrays[shared_IDs[1]]
+    src = g.shareds.gpuarrays(shared_IDs[0])
+    dest = g.shareds.gpuarrays(shared_IDs[1])
     g.gpu_comm.all_gather(src, dest)
     exec_out_check(g.sync)
 

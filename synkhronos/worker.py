@@ -118,8 +118,8 @@ def do_gpu_comms(sync, g_shareds, gpu_comm, master_rank):
     shared_IDs = g_shareds.sync.shared_IDs[:sync.n_shared.value]
     comm_ID = sync.comm_ID.value
     if comm_ID == ALL_GATHER:
-        src = g_shareds.gpuarrays[shared_IDs[0]]
-        dest = g_shareds.gpuarrays[shared_IDs[1]]
+        src = g_shareds.gpuarrays(shared_IDs[0])
+        dest = g_shareds.gpuarrays(shared_IDs[1])
         gpu_comm.all_gather(src, dest)
     else:
         if comm_ID in [REDUCE, ALL_REDUCE]:
@@ -127,7 +127,7 @@ def do_gpu_comms(sync, g_shareds, gpu_comm, master_rank):
             avg = op in AVG_ALIASES
             op = "sum" if avg else op
         for shared_ID in shared_IDs:
-            src = g_shareds.gpuarrays[shared_ID]
+            src = g_shareds.gpuarrays(shared_ID)
             if comm_ID == BROADCAST:
                 gpu_comm.broadcast(src, root=master_rank)
             elif comm_ID == REDUCE:

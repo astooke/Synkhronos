@@ -218,16 +218,18 @@ class Shareds(SynkVariables):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.gpuarrays = list()
         self.shapes = list()
         self.avg_funcs = list()
         self.avg_facs = list()
         self.shmem_tag_pre = SHRD_SHMEM_TAG_PRE
 
+    def gpuarrays(self, idx):
+        """ Re-reference the variable in case GPU allocation has changed. """
+        return self.vars[idx].container.data
+
     def include(self, var, build_avg_func):
         is_new_var, var_ID = self._include(var)
         if is_new_var:
-            self.gpuarrays.append(var.container.data)
             self.shapes.append(var.container.data.shape)
             if build_avg_func:  # (only in master)
                 dtype = self.dtypes[var_ID]
@@ -238,11 +240,13 @@ class Shareds(SynkVariables):
                 self.avg_funcs.append(avg_func)
         return var_ID
 
-    def register_func(self, theano_function, build_avg_func=True):
+    def register_func(self, f, build_avg_func=True):
         shared_IDs = list()
-        shareds = theano_function.get_shared()
-        for var in shareds:
-            shared_IDs.append(self.include(var, build_avg_func))
+        n_vars = len(f.inv_finder)
+        for theano_In in [f.inv_finder[f.finder[i]] for i in range(n_vars)]:
+            if theano_In.implicit:  # (then it is shared variable)
+                var = theano_In.variable
+                shared_IDs.append(self.include(var, build_avg_func))
         return tuple(shared_IDs)
 
     def alloc_shmem(self, shared_ID, rank, create=True):
@@ -392,18 +396,23 @@ class SynkFunction(object):
 
     @property
     def theano_function(self):
+        """ Read-only: returns the underlying Theano function. """
         return self._theano_function
 
     @property
     def inputs_scatter(self):
+        """ Read-only: lists whether inputs are scattered (`0-th` dimension);
+        otherwise broadcast. """
         return self._inputs_scatter
 
     @property
     def collect_modes(self):
+        """ Read-only: lists the output collection modes. """
         return self._collect_modes
 
     @property
     def reduce_ops(self):
+        """ Read-only: lists the output reduce operations. """
         return self._reduce_ops
 
     def _call_theano_function(self, inputs, output_subset=None):
