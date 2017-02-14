@@ -8,10 +8,17 @@ import os
 
 PID = str(os.getpid())
 
+PRE = "/synk_" + PID
+SCAT_IDXS_TAG = PRE + "_scat_idxs_"
+
 # Exec types
 FUNCTION = 0
 GPU_COMM = 1
 CPU_COMM = 2
+
+# BCAST Input Directives
+BCAST_IDXS = 0
+BCAST_SLICE = 1
 
 # GPU_COMM IDs
 BROADCAST = 0

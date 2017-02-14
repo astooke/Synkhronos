@@ -10,20 +10,24 @@ import pickle
 from threading import BrokenBarrierError
 import atexit
 
+from .shmemarray import NpShmemArray
 from .variables import Inputs, Shareds, SynkFunction
 from .common import use_gpu
 from .common import (PKL_FILE, FUNCTION, GPU_COMM, BROADCAST, REDUCE, ALL_REDUCE,
-                  ALL_GATHER, GATHER, WORKER_OPS, AVG_ALIASES, CPU_COMM, SCATTER)
+                  ALL_GATHER, GATHER, WORKER_OPS, AVG_ALIASES, CPU_COMM, SCATTER,
+                  SCAT_IDXS_TAG)
 
 
 class Function(SynkFunction):
 
+    _create = False
     rank = None
     master_rank = None
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._build_output_subset_shmem(False)
+        self._build_sync()
+        self.scat_idx_tag = None
 
     def __call__(self, sync, g_inputs, gpu_comm):
         """
@@ -31,26 +35,19 @@ class Function(SynkFunction):
         2. Execute local theano function on those inputs.
         3. Send results back to master.
         """
-        my_inputs = self.receive_inputs(g_inputs)
+        my_inputs = self.receive_inputs(sync, g_inputs)
         output_subset, output_set = self._receive_output_subset()
         my_results = self._call_theano_function(my_inputs, output_subset)  # (always returns a tuple)
         self._collect_results(my_results, gpu_comm, output_set)
 
-    def receive_inputs(self, g_inputs):
-        assign_idx = g_inputs.sync.assign_idx[self._ID]
-        my_idx = (assign_idx[self.rank], assign_idx[self.rank + 1])
+    def receive_inputs(self, sync, g_inputs):
+        my_idxs = get_my_idxs(sync, self.rank)
         my_inputs = list()
-        for input_ID, scatter in zip(self._input_IDs, self._inputs_scatter):
+        for input_ID in self._input_IDs:
             if g_inputs.sync.tags[input_ID] != g_inputs.tags[input_ID]:
                 # A new shmem has been allocated, need to get it.
-                shape = g_inputs.sync.shapes[input_ID][:]
-                tag_ID = g_inputs.sync.tags[input_ID]
-                g_inputs.alloc_shmem(input_ID, shape, tag_ID, False)
-            shmem = g_inputs.shmems[input_ID]
-            if scatter:
-                my_inputs.append(shmem[my_idx[0]:my_idx[1]])
-            else:
-                my_inputs.append(shmem[:g_inputs.sync.max_idx[input_ID]])
+                g_inputs.alloc_shmem(input_ID)
+            my_inputs.append(g_inputs.shmems[input_ID][my_idxs])
         return tuple(my_inputs)
 
     def _receive_output_subset(self):
@@ -77,17 +74,15 @@ def unpack_functions(theano_functions, sync_dict, n_fcn):
     """
     collect_modes_all = sync_dict["collect_modes"]
     reduce_ops_all = sync_dict["reduce_ops"]
-    inputs_scatter_all = sync_dict["inputs_scatter"]
     synk_functions = list()
-    g_inputs = Inputs()
-    g_shareds = Shareds()
+    g_inputs = Inputs(False)
+    g_shareds = Shareds(False)
     for idx, fcn in enumerate(theano_functions[:n_fcn]):
         input_IDs = g_inputs.register_func(fcn)
-        g_shareds.register_func(fcn, build_avg_func=False)
+        g_shareds.register_func(fcn)
         synk_functions.append(Function(ID=idx,
                                        theano_function=fcn,
                                        input_IDs=input_IDs,
-                                       inputs_scatter=inputs_scatter_all[idx],
                                        collect_modes=collect_modes_all[idx],
                                        reduce_ops=reduce_ops_all[idx],
                                        )
@@ -137,22 +132,41 @@ def do_gpu_comms(sync, g_shareds, gpu_comm, master_rank):
             elif comm_ID == GATHER:
                 gpu_comm.all_gather(src)
             else:
-                raise RuntimeError("Unrecognized GPU communication \
-                    type in worker.")
+                raise RuntimeError("Unrecognized GPU communication type in "
+                    "worker.")
         if comm_ID == ALL_REDUCE and avg:
             for shared_ID in shared_IDs:
                 g_shareds.avg_functions[shared_ID]()
 
 
 def do_cpu_comms(sync, g_shareds, rank):
-    shared_ID = sync.shared_IDs[0]
     comm_ID = sync.comm_ID.value
+    shared_IDs = g_shareds.sync.shared_IDs[:sync.n_shared.value]
     if comm_ID == SCATTER:
-        if g_shareds.shmems[shared_ID] is None:
-            g_shareds.alloc_shmem(shared_ID, rank, False)
-        g_shareds.vars[shared_ID].set_value(g_shareds.shmems[shared_ID])
+        my_idxs = get_my_idxs(sync, rank)
+        for shared_ID in shared_IDs:
+            if g_shareds.tags[shared_ID] != g_shareds.sync.tags[shared_ID]:
+                g_shareds.alloc_shmem(shared_ID)
+            g_shareds.vars[shared_ID].set_value(g_shareds.shmems[shared_ID][my_idxs])
     else:
         raise RuntimeError("Unrecognized CPU comm type in worker.")
+
+
+def get_my_idxs(sync, rank):
+    my_idxs = slice(*sync.scat.assign_idxs[rank:rank + 2])
+    if sync.scat.use_idxs.value:
+        if "my_idxs_tag" not in sync.scat or \
+                sync.scat.my_idxs_tag != sync.scat.idxs_tag.value:
+            alloc_scat_idxs(sync)
+        my_idxs = sync.scat.idxs_arr[my_idxs]
+    return my_idxs
+
+
+def alloc_scat_idxs(sync):
+    size = sync.scat.idxs_size.value
+    tag = SCAT_IDXS_TAG + "_" + str(sync.scat.idxs_tag.value)
+    sync.scat.idxs_arr = NpShmemArray('i', size, tag, False)
+    sync.scat.my_idxs_tag = sync.scat.idxs_tag.value
 
 
 def error_close(sync):

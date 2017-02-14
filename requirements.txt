@@ -1,2 +1,3 @@
 theano>=0.9.0b1
 posix_ipc>=1.0.0
+pygpu>=0.6.0

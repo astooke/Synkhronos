@@ -18,6 +18,7 @@
 # Edited for python 3 by: Adam Stooke
 #
 
+import numpy as np
 # import os
 import sys
 import mmap
@@ -90,3 +91,36 @@ def ShmemRawArray(typecode_or_type, size_or_initializer, tag, create=True):
         obj.__init__(*size_or_initializer)
 
     return obj
+
+
+###############################################################################
+#                       New Additions  (by Adam)                              #
+
+
+NP_TO_C_TYPE = {'float64': ctypes.c_double,    np.float64: ctypes.c_double,
+                'float32': ctypes.c_float,     np.float32: ctypes.c_float,
+                'float16': None,               np.float16: None,
+                'int8': ctypes.c_byte,         np.int8: ctypes.c_byte,
+                'int16': ctypes.c_short,       np.int16: ctypes.c_short,
+                'int32': ctypes.c_int,         np.int32: ctypes.c_int,
+                'int64': ctypes.c_longlong,    np.int64: ctypes.c_longlong,
+                'uint8': ctypes.c_ubyte,       np.uint8: ctypes.c_ubyte,
+                'uint16': ctypes.c_ushort,     np.uint16: ctypes.c_ushort,
+                'uint32': ctypes.c_uint,       np.uint32: ctypes.c_uint,
+                'uint64': ctypes.c_ulonglong,  np.uint64: ctypes.c_ulonglong,
+                'bool': ctypes.c_bool,         np.bool: ctypes.c_bool
+                }
+
+
+def NpShmemArray(dtype, shape, tag, create=True):
+    ctype = NP_TO_C_TYPE.get(dtype, None)
+    if ctype is None:
+        raise ValueError("Unsupported numpy dtype: ", dtype)
+    return np.ctypeslib.as_array(
+        ShmemRawArray(
+            ctype,
+            int(np.prod(shape)),
+            tag,
+            create,
+        )
+    ).reshape(shape)

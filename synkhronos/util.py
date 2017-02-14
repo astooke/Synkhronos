@@ -62,6 +62,13 @@ def build_sync(n_gpu):
         exec_in=mp.Barrier(n_gpu),
         exec_out=mp.Barrier(n_gpu),
     )
+    scat = struct(
+        assign_idx=np.ctypeslib.as_array(mp.RawArray('i', n_gpu + 1)),
+        use_idxs=mp.RawValue(ctypes.c_bool, False),
+        idxs_tag=mp.RawValue('i', 0),
+        idxs_size=mp.RawValue('i', 0),
+        idxs_arr=None,
+    )
     sync = struct(
         dict=dictionary,  # use for setup e.g. Clique comm_id; serializes.
         quit=mp.RawValue(ctypes.c_bool, False),
@@ -73,6 +80,7 @@ def build_sync(n_gpu):
         comm_ID=mp.RawValue('i', 0),
         op_ID=mp.RawValue('i', 0),
         n_shared=mp.RawValue('i', 0),
+        scat=scat,
         barriers=barriers,
     )
     return sync
@@ -93,35 +101,6 @@ def get_worker_reduce_ops(synk_functions):
 
 ###############################################################################
 #                           (function)                                        #
-
-
-def check_func_scatter(inputs, broadcast_inputs, scatter_inputs):
-    if broadcast_inputs is not None and scatter_inputs is not None:
-        raise ValueError("May specify either broadcast_inputs or "
-            "scatter_inputs but not both.")
-    if broadcast_inputs is None and scatter_inputs is None:
-        inputs_scatter = [True] * len(inputs)  # (default is to scatter all)
-    elif broadcast_inputs is not None:
-        if not isinstance(broadcast_inputs, (tuple, list)):
-            raise TypeError("Optional param broadcast_inputs must be list or "
-                "tuple.")
-        inputs_scatter = [True] * len(inputs)
-        for bc_inpt in broadcast_inputs:
-            if bc_inpt not in inputs:
-                raise ValueError("Elements of param broadcast_inputs must "
-                    "be in the list of inputs provided.")
-            inputs_scatter[inputs.index(bc_inpt)] = False
-    else:  # (scatter_inputs is not None)
-        if not isinstance(scatter_inputs, (list, tuple)):
-            raise TypeError("Optional param scatter_inputs must be list or "
-                "tuple.")
-        inputs_scatter = [False] * len(inputs)
-        for sc_inpt in scatter_inputs:
-            if sc_inpt not in inputs:
-                raise ValueError("Elements of param scatter_inputs must "
-                    "be in the list of inputs provided.")
-            inputs_scatter[inputs.index(sc_inpt)] = True
-    return inputs_scatter
 
 
 def check_collect(outputs, collect_modes, reduce_ops):
@@ -158,43 +137,88 @@ def check_collect(outputs, collect_modes, reduce_ops):
 
 
 ###############################################################################
+#                       Shared Memory Management                              #
+
+def _assign_scat_idx(n_gpu, shmem_sizes, scat_arg):
+    if scat_arg is not None:
+        if isinstance(scat_arg, int):  # (scat_size is used)
+            max_idx = scat_arg
+            space_start = 0
+            space_end = scat_arg
+        elif isinstance(scat_arg, slice):  # (scat_slice is used)
+            max_idx = scat_arg.stop
+            space_start = scat_arg.start
+            space_end = scat_arg.stop
+        else:  # (scat_idxs is used)
+            max_idx = max(scat_arg)
+            space_start = 0
+            space_end = len(scat_arg)
+        if max_idx > min(shmem_sizes):
+            raise ValueError("Requested index out of range of shared memory.")
+    else:  # (i.e. no scat input directive provided, use full arrays)
+        space_start = 0
+        space_end = shmem_sizes[0]
+        if shmem_sizes.count(space_end) != len(shmem_sizes):  # (fast)
+            raise ValueError("If not providing scatter directive, all "
+                "shared memory arrays must be the same size in 0-th "
+                "dimension.  Had 0-th dim sizes: ", shmem_sizes)
+    return np.linspace(space_start, space_end, n_gpu + 1, dtype=np.int32)
+
+
+def check_scat_types(scat_idxs, scat_slice, scat_size):
+    if sum([scat_idxs is None, scat_slice is None, scat_size is None]) < 2:
+        raise ValueError("Specify only one of: scat_idxs, scat_slice, scat_size.")
+    if scat_idxs is not None:
+        if not isinstance(scat_idxs, (list, tuple)):
+            if isinstance(scat_idxs, np.ndarray):
+                if scat_idxs.ndim > 1:
+                    raise ValueError("Numpy array for scat_idxs must "
+                        "be 1 dimensional, got: ", scat_idxs.ndim)
+            else:
+                raise TypeError("Param scat_idxs must be a list, tuple "
+                    "or 1-dimensional numpy array of ints.")
+        return scat_idxs
+    elif scat_slice is not None:
+        if not isinstance(scat_slice, slice):
+            if not isinstance(scat_slice, slice):
+                raise TypeError("Param scat_slice must be a slice object.")
+            if scat_slice.step is not None and scat_slice.step > 1:
+                raise NotImplementedError  # (could be done)
+        return scat_slice
+    elif scat_size is not None:
+        if not isinstance(scat_size, int):
+            raise TypeError("Param scat_size must be an integer.")
+        return scat_size
+    else:
+        return None
+
+
+###############################################################################
 #                           GPU Collectives                                   #
 
 
-def get_shared_IDs(g_shareds, synk_functions=None, shared_vars=None):
-    """ this one is clean from global accesses """
-    if synk_functions is None and shared_vars is None:
-        return tuple(range(g_shareds.num))  # default is all shareds
-    else:
-        # Type and existence checking.
-        if synk_functions is None:
-            synk_functions = []
-        else:
-            if not isinstance(synk_functions, (list, tuple)):
-                synk_functions = (synk_functions,)
-            for synk_fcn in synk_functions:
-                if not isinstance(synk_fcn, SynkFunction):
-                    raise TypeError("Expected Synkhronos function(s).")
-        if shared_vars is None:
-            shared_vars = []
-        else:
-            if not isinstance(shared_vars, (list, tuple)):
-                shared_vars = (shared_vars,)
-            for var in shared_vars:
-                if var is None:
-                    raise ValueError("Received None for one or mored shared "
-                        "variables.")
-                if var not in g_shareds.names and var not in g_shareds.vars:
-                    raise ValueError("Unrecognized shared variable or name: ", var)
-
-        shared_IDs = list()
+def get_shared_IDs(g_shareds, shared_vars=None, synk_functions=None):
+    shared_IDs = list()
+    if synk_functions is not None:
+        if not isinstance(synk_functions, (list, tuple)):
+            synk_functions = (synk_functions,)
         for synk_fcn in synk_functions:
+            if not isinstance(synk_fcn, SynkFunction):
+                raise TypeError("Expected Synkhronos function(s).")
             shared_IDs += synk_fcn._shared_IDs
+    if shared_vars is not None:
+        if not isinstance(shared_vars, (list, tuple)):
+            shared_vars = (shared_vars,)
         for var in shared_vars:
+            if var is None:
+                raise ValueError("Received None for one or mored shared "
+                    "variables.")
             if var in g_shareds.names:
                 shared_IDs.append(g_shareds.names.index(var))
-            else:
+            elif var in g_shareds.vars:
                 shared_IDs.append(g_shareds.vars.index(var))
+            else:
+                raise ValueError("Unrecognized shared variable or name: ", var)
     return tuple(sorted(set(shared_IDs)))
 
 
@@ -203,41 +227,3 @@ def check_op(op):
         raise ValueError("Unrecognized reduction operator: ", op,
             ", must be one of: ", [k for k in REDUCE_OPS.keys()])
     return REDUCE_OPS[op]
-
-
-###############################################################################
-#                       CPU Comm                                              #
-
-
-def check_shared_var(g_shareds, shared_var):
-    if shared_var not in g_shareds.vars and shared_var not in g_shareds.names:
-        raise ValueError("Unrecognized theano shared variable or name: ",
-            shared_var)
-    if shared_var in g_shareds.vars:
-        shared_ID = g_shareds.vars.index(shared_var)
-    else:
-        shared_ID = g_shareds.names.index(shared_var)
-        shared_var = g_shareds.vars[shared_ID]
-    return shared_var, shared_ID
-
-
-def check_scatter_sources(g_shareds, n_gpu, sources, shared_ID):
-    if not isinstance(sources, (tuple, list)):
-        raise TypeError("Param sources must be a list or tuple of arguments, "
-            "each for shared.set_value().")
-    if len(sources) != n_gpu:
-        raise ValueError("Source list must have as many elements as there are "
-            "GPUs.")
-    shape = g_shareds.gpuarrays[shared_ID].shape
-    dtype = g_shareds.vars[shared_ID].type.dtype
-    for idx, src in enumerate(sources):
-        if not isinstance(src, np.ndarray):
-            src = np.asarray(src, dtype=dtype)
-            sources[idx] = src
-        elif src.dtype != dtype:
-            raise TypeError("Must provide the same data type as the shared "
-                "var: ", dtype)
-        if src.shape != shape:
-            raise ValueError("Source is not same shape as shared variable: ",
-                shape)
-    return sources

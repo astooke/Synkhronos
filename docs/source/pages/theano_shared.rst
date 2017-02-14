@@ -2,7 +2,7 @@
 Theano Shared Variable Example
 ==============================
 
-This example demonstrates management of Theano shared variables in the master and workers.  First, the setup:
+This example demonstrates management of Theano shared variables in the master and workers.  First, the setup (again dual-GPU):
 
 .. literalinclude:: /examples/example_1.py
     :lines: 6-19
@@ -13,7 +13,7 @@ The resulting output is the correct answer:
     :language: text
     :lines: 1-5
 
-Continuing with a reset, using the Synkhronos function, and investigating results; ``gather()`` is the way to collect all shared values into the master, either for inspection and debugging or for program use:
+Continuing with a reset and a call to the Synkhronos function, we investigate results using ``gather()``, which is the way to collect all shared values into the master:
 
 .. literalinclude:: /examples/example_1.py
     :lines: 20-28
