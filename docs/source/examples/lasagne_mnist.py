@@ -20,7 +20,10 @@ import numpy as np
 import theano
 import theano.tensor as T
 
-import lasagne
+# import lasagne  # breaks GPU init if imported before forking!
+
+import synkhronos as synk
+import ipdb
 
 
 # ################## Download and prepare the MNIST dataset ##################
@@ -86,6 +89,7 @@ def load_dataset():
 # the output layer of a neural network model built in Lasagne.
 
 def build_mlp(input_var=None):
+    import lasagne
     # This creates an MLP of two hidden layers of 800 units each, followed by
     # a softmax output layer of 10 units. It applies 20% dropout to the input
     # data and 50% dropout to the hidden layers.
@@ -129,6 +133,7 @@ def build_mlp(input_var=None):
 
 def build_custom_mlp(input_var=None, depth=2, width=800, drop_input=.2,
                      drop_hidden=.5):
+    import lasagne
     # By default, this creates the same network as `build_mlp`, but it can be
     # customized with respect to the number and size of hidden layers. This
     # mostly showcases how creating a network in Python code can be a lot more
@@ -156,6 +161,7 @@ def build_custom_mlp(input_var=None, depth=2, width=800, drop_input=.2,
 
 
 def build_cnn(input_var=None):
+    import lasagne
     # As a third model, we'll create a CNN of two convolution + pooling stages
     # and a fully-connected hidden layer in front of the output layer.
 
@@ -224,6 +230,19 @@ def iterate_minibatches(inputs, targets, batchsize, shuffle=False):
         yield inputs[excerpt], targets[excerpt]
 
 
+def iterate_minibatch_indices(dataslice, batchsize, shuffle=False):
+    if shuffle:
+        indices = np.arange(dataslice.start, dataslice.stop)
+        np.random.shuffle(indices)
+    for start_idx in range(dataslice.start, dataslice.stop - batchsize + 1, batchsize):
+        if shuffle:
+            batch = indices[start_idx:start_idx + batchsize]
+        else:
+            batch = slice(start_idx, start_idx + batchsize)
+        yield batch
+
+
+
 # ############################## Main program ################################
 # Everything else will be handled in our main program now. We could pull out
 # more functions to better separate the code, but it wouldn't make it any
@@ -233,6 +252,10 @@ def main(model='mlp', num_epochs=500):
     # Load the dataset
     print("Loading data...")
     X_train, y_train, X_val, y_val, X_test, y_test = load_dataset()
+
+    # Fork workers and initialize gpu before building any variables.
+    synk.fork()
+    import lasagne  # can only do this AFTER forking!
 
     # Prepare Theano variables for inputs and targets
     input_var = T.tensor4('inputs')
@@ -279,10 +302,21 @@ def main(model='mlp', num_epochs=500):
 
     # Compile a function performing a training step on a mini-batch (by giving
     # the updates dictionary) and returning the corresponding training loss:
-    train_fn = theano.function([input_var, target_var], loss, updates=updates)
+    # train_fn = theano.function([input_var, target_var], loss, updates=updates)
+    train_fn = synk.function([input_var, target_var], loss, updates=updates, collect_modes=[None])
 
     # Compile a second function computing the validation loss and accuracy:
-    val_fn = theano.function([input_var, target_var], [test_loss, test_acc])
+    # val_fn = theano.function([input_var, target_var], [test_loss, test_acc])
+    val_fn = synk.function([input_var, target_var], [test_loss, test_acc])
+
+    # Send all functions and variables to workers (in the future, automatic)
+    synk.distribute()
+
+    # Write data into input shared memory (also applies to val_fn--same vars).
+    train_fn.set_input_shmems(np.concatenate([X_train, X_val, X_test]),
+                              np.concatenate([y_train, y_val, y_test]))
+    # And record which entries are each kind, for easy reference.
+    train_set, val_set, test_set = synk.make_slices([y_train, y_val, y_test])
 
     # Finally, launch the training loop.
     print("Starting training...")
@@ -292,25 +326,31 @@ def main(model='mlp', num_epochs=500):
         train_err = 0
         train_batches = 0
         start_time = time.time()
-        for batch in iterate_minibatches(X_train, y_train, 500, shuffle=True):
-            inputs, targets = batch
-            train_err += train_fn(inputs, targets)
+        for batch in iterate_minibatch_indices(train_set, 1000, shuffle=True):
+            train_err += train_fn(batch=batch)
+            synk.all_reduce(params)
             train_batches += 1
+        mid_time = time.time()
 
         # And a full pass over the validation data:
         val_err = 0
         val_acc = 0
         val_batches = 0
-        for batch in iterate_minibatches(X_val, y_val, 500, shuffle=False):
-            inputs, targets = batch
-            err, acc = val_fn(inputs, targets)
+        for batch in iterate_minibatch_indices(val_set, 1000, shuffle=False):
+            err, acc = val_fn(batch=batch)
             val_err += err
             val_acc += acc
             val_batches += 1
+        end_time = time.time()
+
+        val_fn_time = end_time - mid_time
+        train_fn_time = mid_time - start_time
 
         # Then we print the results for this epoch:
         print("Epoch {} of {} took {:.3f}s".format(
             epoch + 1, num_epochs, time.time() - start_time))
+        print("Train function time: {:.3f}s".format(train_fn_time))
+        print("Validation function time: {:.3f}s".format(val_fn_time))
         print("  training loss:\t\t{:.6f}".format(train_err / train_batches))
         print("  validation loss:\t\t{:.6f}".format(val_err / val_batches))
         print("  validation accuracy:\t\t{:.2f} %".format(
@@ -320,12 +360,12 @@ def main(model='mlp', num_epochs=500):
     test_err = 0
     test_acc = 0
     test_batches = 0
-    for batch in iterate_minibatches(X_test, y_test, 500, shuffle=False):
-        inputs, targets = batch
-        err, acc = val_fn(inputs, targets)
+    for batch in iterate_minibatch_indices(test_set, 500, shuffle=False):
+        err, acc = val_fn(batch=batch)
         test_err += err
         test_acc += acc
         test_batches += 1
+
     print("Final results:")
     print("  test loss:\t\t\t{:.6f}".format(test_err / test_batches))
     print("  test accuracy:\t\t{:.2f} %".format(

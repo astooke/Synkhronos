@@ -316,15 +316,7 @@ def main(model='mlp', num_epochs=500):
     train_fn.set_input_shmems(np.concatenate([X_train, X_val, X_test]),
                               np.concatenate([y_train, y_val, y_test]))
     # And record which entries are each kind, for easy reference.
-    train_end = len(y_train)
-    val_end = train_end + len(y_val)
-    test_end = val_end + len(y_test)
-    train_set = slice(0, train_end)
-    val_set = slice(train_end, val_end)
-    test_set = slice(val_end, test_end)
-
-
-
+    train_set, val_set, test_set = synk.make_slices([y_train, y_val, y_test])
 
     # Finally, launch the training loop.
     print("Starting training...")
@@ -334,7 +326,7 @@ def main(model='mlp', num_epochs=500):
         train_err = 0
         train_batches = 0
         start_time = time.time()
-        for batch in iterate_minibatch_indices(train_set, 1000, shuffle=True):
+        for batch in iterate_minibatch_indices(train_set, 500, shuffle=True):
             train_err += train_fn(batch=batch)
             synk.all_reduce(params)
             train_batches += 1
@@ -344,7 +336,7 @@ def main(model='mlp', num_epochs=500):
         val_err = 0
         val_acc = 0
         val_batches = 0
-        for batch in iterate_minibatch_indices(val_set, 1000, shuffle=False):
+        for batch in iterate_minibatch_indices(val_set, 500, shuffle=False):
             err, acc = val_fn(batch=batch)
             val_err += err
             val_acc += acc

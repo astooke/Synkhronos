@@ -313,7 +313,7 @@ def function(inputs, outputs=None,
     will only be the default behavior for the function, but will be possible to
     overrule when calling.)
 
-    All inputs are scattered evenly along the 0-th dimension.  (Use a Theano
+    All inputs are scattered evenly along the `0-th` dimension.  (Use a Theano
     shared variable for a broadcasted input.)
 
     Inputs and outputs need not be variables transferred to the GPU by the user.
@@ -324,11 +324,11 @@ def function(inputs, outputs=None,
     with a transfer to remain on the GPU, they will be left there in the master.
 
     Args:
-        inputs (var): as ``inputs`` in ``theano.function``
-        outputs (None, optional): as ``outputs`` in ``theano.function``
+        inputs (var): as ``inputs`` in ``theano.function()``
+        outputs (None, optional): as ``outputs`` in ``theano.function()``
         collect_modes (str, list, optional): default behaviors; "gather" or "reduce"
         reduce_ops (str, list, optional): default behaviors; e.g. "sum", "prod", "min", "max", "avg"
-        **kwargs (TYPE): passed directly to ``Theano.function``
+        **kwargs (TYPE): passed directly to ``theano.function()``
 
     Raises:
         RuntimeError: If not yet forked or if already distributed.
@@ -433,6 +433,9 @@ def free_shmems(*input_vars):
     """
     Will eliminate all internal references to a shared array (including in
     workers) so it can be freed.  Also useful to shrink shmem.
+
+    Warning:
+        Not Implemented.
     """
     check_active()
     raise NotImplementedError
@@ -647,7 +650,7 @@ def all_gather(source, dest):
 
 
 def scatter(shared_vars_data, batch=None):
-    """ Scatter data and push to master and worker GPU Theano shared variables.
+    """Scatter data and push to master and worker GPU Theano shared variables.
 
     Input `shared_vars_data` can be either a dictionary, a list, or a single
     variable/name.  If a dictionary, the input is used as in `set_shmems`; the
@@ -655,15 +658,13 @@ def scatter(shared_vars_data, batch=None):
     Otherwise, the input is used to determine which Theano shared variables to
     scatter over existing data in shared memory.
 
-    Scatter directive inputs behave as for function calls; they can limit the
+    Input parameter `batch` behaves as for function calls; it can limit the
     scatter effect over some subset of the allocated shared memory.
 
 
     Args:
         shared_vars_data (TYPE): Shared variables to scatter, optionally with data
-        scat_idxs (None, optional): List of indices to scatter
-        scat_slice (None, optional): Slice to scatter
-        scat_size (None, optional): Size from array beginning to scatter
+        batch (None, optional): int, slice, or list of requested indices
 
     Raises:
         ValueError: If no input data and shared memory does not exist yet.
@@ -814,6 +815,10 @@ def close():
         print("Warning: Called close() after synkhronos already closed.")
     else:
         _close()
+
+
+###############################################################################
+#                           Helpers                                           #
 
 
 def _close():

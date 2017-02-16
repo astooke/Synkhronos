@@ -2,7 +2,7 @@
 Theano Shared Variable Example
 ==============================
 
-This example demonstrates management of Theano shared variables in the master and workers.  First, the setup (again dual-GPU):
+This example demonstrates management of Theano shared variables in the master and workers.  First, the setup, again dual-GPU:
 
 .. literalinclude:: /examples/example_1.py
     :lines: 6-19
@@ -36,11 +36,11 @@ Notice the use of ``broadcast()`` to reset the values in the workers according t
 Notes on Collectives
 --------------------
 
-Currently, all Theano shared variable collectives must be called directly, through Synkhronos--no rules for associating such actions with a function exist yet.  Broadcast, reduce, all-reduce, gather, and all-gather operate through NVIDIA's NCCL collectives via PyGPU.  Scatter is a CPU shared-memory operation.  See the function reference page for more details specific to each operation.
+All Theano shared variable collectives must be called directly, through Synkhronos--no rules for associating such actions with a function exist yet.  ``broadcast()``, ``reduce()``, ``all-reduce()``, ``gather()``, and ``all-gather()`` operate through NVIDIA's NCCL collectives via PyGPU.  ``scatter()`` is a CPU shared-memory operation that pushes values to GPUs using Theano shared's ``set_value()`` method.  Results of collective communications may be returned as a new GPU array (i.e. not associated with a Theano shared variable) in the master process in some cases, but no collective action can create a new array in any worker.  See the function reference page for more details specific to each operation.
 
 In the future, CPU-based analogs of all collectives are planned to be provided.  Beside being necessary for CPU-only usage, these might actually be faster in some uses on some computer architectures.
 
 Averaging
 ---------
 
-The reduce operation "average" is not present in NCCL.  This is implemented in Synkhronos by a NCCL "sum" reduction and then calling an internally built Theano function to multiply the value (shared variable or function output, while it's still on GPU) by the reciprocal of the number of GPUs.
+The reduce operation `average` is not present in NCCL.  This is implemented in Synkhronos by a NCCL `sum` reduction and then calling an internally built Theano function to multiply the value (shared variable or function output, while it's still on GPU) by the reciprocal of the number of GPUs.

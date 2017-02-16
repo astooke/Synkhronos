@@ -1,4 +1,4 @@
-Detected and attempting to use 2 GPUs.
+Detected and attempting to use 2 GPUs...
 Using cuDNN version 5105 on context None
 Mapped name None to device cuda1: GeForce GTX 1080 (0000:01:00.0)
 Using cuDNN version 5105 on context None
