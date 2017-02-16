@@ -19,11 +19,9 @@ import time
 import numpy as np
 import theano
 import theano.tensor as T
-
-# import lasagne  # breaks GPU init if imported before forking!
+import lasagne  # requires Theano flags: device=cpu, force_device=True
 
 import synkhronos as synk
-
 
 
 # ################## Download and prepare the MNIST dataset ##################
@@ -89,7 +87,6 @@ def load_dataset():
 # the output layer of a neural network model built in Lasagne.
 
 def build_mlp(input_var=None):
-    import lasagne
     # This creates an MLP of two hidden layers of 800 units each, followed by
     # a softmax output layer of 10 units. It applies 20% dropout to the input
     # data and 50% dropout to the hidden layers.
@@ -133,7 +130,6 @@ def build_mlp(input_var=None):
 
 def build_custom_mlp(input_var=None, depth=2, width=800, drop_input=.2,
                      drop_hidden=.5):
-    import lasagne
     # By default, this creates the same network as `build_mlp`, but it can be
     # customized with respect to the number and size of hidden layers. This
     # mostly showcases how creating a network in Python code can be a lot more
@@ -161,7 +157,6 @@ def build_custom_mlp(input_var=None, depth=2, width=800, drop_input=.2,
 
 
 def build_cnn(input_var=None):
-    import lasagne
     # As a third model, we'll create a CNN of two convolution + pooling stages
     # and a fully-connected hidden layer in front of the output layer.
 
@@ -255,7 +250,6 @@ def main(model='mlp', num_epochs=500):
 
     # Fork workers and initialize gpu before building any variables.
     synk.fork()
-    import lasagne  # can only do this AFTER forking!
 
     # Prepare Theano variables for inputs and targets
     input_var = T.tensor4('inputs')

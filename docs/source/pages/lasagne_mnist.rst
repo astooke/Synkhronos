@@ -48,14 +48,16 @@ When the training loss output is not collected and the model parameters are neve
 
 Synchronizing model parameters at every step results in a mild slow-down to **1.4** x.  Synchronizing on a less frequent schedule would decrease this effect and could be traded against iteration performance.
 
-It is unclear why collection of the training loss output induces such a dramatic slow-down; the same collection is applied to the validation outputs with no such effect.  In the future, either the cause of this will be determined, hopefully, or CPU-based collection may become an attractive alternative, especially for scalar outputs.
+It is unclear why collection of the training loss output--a scalar--induces such a dramatic slow-down, to only **1.1** x.  A better paradigm would be to build accumulator Theano shared variables for the loss and accuracy and only reduce them once at the conclusion of each epoch.  (In the future, either the cause of this will be determined, hopefully, or CPU-based collection may become an attractive alternative for some outputs.)
 
 Inputs as Theano Shareds -- Scatter
 -----------------------------------
 
 Use of multiple GPUs may allow a significant portion of a data set to fit in GPU memory.  In this case, computation may be further accelerated by building function inputs as Theano shared variables.  The ``scatter()`` collective can be used to push a distinct subset of the data onto each GPU.  Management of shared memory in this case can be performed just as with inputs: all data may be placed in system shared memory associated with a Theano shared variable using ``set_shmems()``.  Subsequently passing a slice or list of indices to ``scatter()`` via the ``batch`` keyword will result in that subset being evenly divided up and pushed to GPU memories.
 
-Importing Lasagne
------------------
+Importing Lasagne & GpuArray
+----------------------------
 
-Currently, importing Lasagne before forking renders it impossible to initialize GPUs...fix is underway to allow Lasagne imports back into file headers.
+Use the Theano flags ``device=cpu,force_device=True`` when placing ``import lasagne`` or ``import theano.gpuarray`` in file headers.
+
+The reason this is needed is that it is not possible to fork after initializing a CUDA context and then use GPU functions in a sub-processes.  Without the ``force_device=True`` flag, importing ``theano.gpuarray`` creates a CUDA context.  ``import theano.gpuarray`` is called within ``import lasagne``.
