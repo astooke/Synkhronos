@@ -55,6 +55,8 @@ Inputs as Theano Shareds -- Scatter
 
 Use of multiple GPUs may allow a significant portion of a data set to fit in GPU memory.  In this case, computation may be further accelerated by building function inputs as Theano shared variables.  The ``scatter()`` collective can be used to push a distinct subset of the data onto each GPU.  Management of shared memory in this case can be performed just as with inputs: all data may be placed in system shared memory associated with a Theano shared variable using ``set_shmems()``.  Subsequently passing a slice or list of indices to ``scatter()`` via the ``batch`` keyword will result in that subset being evenly divided up and pushed to GPU memories.
 
+.. _lasagne_import:
+
 Importing Lasagne & GpuArray
 ----------------------------
 

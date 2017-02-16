@@ -23,6 +23,8 @@ Achieving the best speedup usually requires one additional implementation consid
 
 This package is for single-node computing; underlying it is Multiprocessing, not MPI.
 
+.. hint::  Use Theano flags ``device=cpu`` and ``force_device=True`` (see :ref:`lasagne_import`).
+
 Contents:
 
 .. toctree::
