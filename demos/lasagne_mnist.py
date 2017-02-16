@@ -23,7 +23,7 @@ import theano.tensor as T
 # import lasagne  # breaks GPU init if imported before forking!
 
 import synkhronos as synk
-import ipdb
+
 
 
 # ################## Download and prepare the MNIST dataset ##################

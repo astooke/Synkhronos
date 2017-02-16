@@ -6,9 +6,6 @@ Outputs used only in master.
 SynkFunction is base class for master and worker Function classes.
 """
 
-# import gtimer as gt
-import ipdb
-
 import numpy as np
 import theano
 from ctypes import c_bool

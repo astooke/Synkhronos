@@ -12,7 +12,7 @@ The main difference in the modified version is in management of the input data. 
 Code Changes
 ~~~~~~~~~~~~
 
-Populate the CPU shared memory, as if inputing all data into the function at once, inside ``main``:
+Populate the CPU shared memory, as if inputing all data into the function at once, inside ``main()``:
 
 .. literalinclude:: /examples/lasagne_mnist.py
     :lines: 313-319

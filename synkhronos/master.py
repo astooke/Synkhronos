@@ -2,10 +2,8 @@
 """
 Run theano functions in parallel on multiple GPUs (data parallelism).
 
-This file has everything exposed to the user.
+This file has (almost) everything exposed to the user.
 """
-# import ipdb
-# import gtimer as gt
 
 import pickle
 import numpy as np
