@@ -23,7 +23,7 @@ import theano.tensor as T
 # import lasagne  # breaks GPU init if imported before forking!
 
 import synkhronos as synk
-# import ipdb
+import ipdb
 
 
 # ################## Download and prepare the MNIST dataset ##################
@@ -230,6 +230,19 @@ def iterate_minibatches(inputs, targets, batchsize, shuffle=False):
         yield inputs[excerpt], targets[excerpt]
 
 
+def iterate_minibatch_indices(dataslice, batchsize, shuffle=False):
+    if shuffle:
+        indices = np.arange(dataslice.start, dataslice.stop)
+        np.random.shuffle(indices)
+    for start_idx in range(dataslice.start, dataslice.stop - batchsize + 1, batchsize):
+        if shuffle:
+            batch = indices[start_idx:start_idx + batchsize]
+        else:
+            batch = slice(start_idx, start_idx + batchsize)
+        yield batch
+
+
+
 # ############################## Main program ################################
 # Everything else will be handled in our main program now. We could pull out
 # more functions to better separate the code, but it wouldn't make it any
@@ -290,7 +303,7 @@ def main(model='mlp', num_epochs=500):
     # Compile a function performing a training step on a mini-batch (by giving
     # the updates dictionary) and returning the corresponding training loss:
     # train_fn = theano.function([input_var, target_var], loss, updates=updates)
-    train_fn = synk.function([input_var, target_var], loss, updates=updates)
+    train_fn = synk.function([input_var, target_var], loss, updates=updates, collect_modes=[None])
 
     # Compile a second function computing the validation loss and accuracy:
     # val_fn = theano.function([input_var, target_var], [test_loss, test_acc])
@@ -298,6 +311,20 @@ def main(model='mlp', num_epochs=500):
 
     # Send all functions and variables to workers (in the future, automatic)
     synk.distribute()
+
+    # Write data into input shared memory (also applies to val_fn--same vars).
+    train_fn.set_input_shmems(np.concatenate([X_train, X_val, X_test]),
+                              np.concatenate([y_train, y_val, y_test]))
+    # And record which entries are each kind, for easy reference.
+    train_end = len(y_train)
+    val_end = train_end + len(y_val)
+    test_end = val_end + len(y_test)
+    train_set = slice(0, train_end)
+    val_set = slice(train_end, val_end)
+    test_set = slice(val_end, test_end)
+
+
+
 
     # Finally, launch the training loop.
     print("Starting training...")
@@ -307,28 +334,25 @@ def main(model='mlp', num_epochs=500):
         train_err = 0
         train_batches = 0
         start_time = time.time()
-        train_fn_time = 0
-        for batch in iterate_minibatches(X_train, y_train, 1000, shuffle=True):
-            inputs, targets = batch
-            train_fn_start_time = time.time()
-            train_err += train_fn(inputs, targets)
-            synk.all_reduce(shared_vars=params)  # synchronize parameters
-            train_fn_time += time.time() - train_fn_start_time
+        for batch in iterate_minibatch_indices(train_set, 1000, shuffle=True):
+            train_err += train_fn(batch=batch)
+            synk.all_reduce(params)
             train_batches += 1
+        mid_time = time.time()
 
         # And a full pass over the validation data:
         val_err = 0
         val_acc = 0
         val_batches = 0
-        val_fn_time = 0
-        for batch in iterate_minibatches(X_val, y_val, 1000, shuffle=False):
-            inputs, targets = batch
-            val_fn_start_time = time.time()
-            err, acc = val_fn(inputs, targets)
-            val_fn_time += time.time() - val_fn_start_time
+        for batch in iterate_minibatch_indices(val_set, 1000, shuffle=False):
+            err, acc = val_fn(batch=batch)
             val_err += err
             val_acc += acc
             val_batches += 1
+        end_time = time.time()
+
+        val_fn_time = end_time - mid_time
+        train_fn_time = mid_time - start_time
 
         # Then we print the results for this epoch:
         print("Epoch {} of {} took {:.3f}s".format(
@@ -344,12 +368,12 @@ def main(model='mlp', num_epochs=500):
     test_err = 0
     test_acc = 0
     test_batches = 0
-    for batch in iterate_minibatches(X_test, y_test, 500, shuffle=False):
-        inputs, targets = batch
-        err, acc = val_fn(inputs, targets)
+    for batch in iterate_minibatch_indices(test_set, 500, shuffle=False):
+        err, acc = val_fn(batch=batch)
         test_err += err
         test_acc += acc
         test_batches += 1
+
     print("Final results:")
     print("  test loss:\t\t\t{:.6f}".format(test_err / test_batches))
     print("  test accuracy:\t\t{:.2f} %".format(

@@ -51,7 +51,7 @@ class Function(SynkFunction):
         return tuple(my_inputs)
 
     def _receive_output_subset(self):
-        output_set = [i for i, x in enumerate(self._output_subset_shmem) if x]
+        output_set = [i for i, x in enumerate(self._sync.output_subset) if x]
         output_subset = None if all(output_set) else output_set
         return output_subset, output_set
 
@@ -103,8 +103,8 @@ def receive_distribution(rank, n_gpu, sync):
         os.remove(PKL_FILE)  # leave no trace
     synk_functions, g_inputs, g_shareds = \
         unpack_functions(theano_functions, sync_dict, sync.n_user_fcns.value)
-    g_inputs.build_sync(len(synk_functions), n_gpu, False)
-    g_shareds.build_sync(False)
+    g_inputs.build_sync()
+    g_shareds.build_sync()
     sync.barriers.distribute_out.wait()
     return synk_functions, g_inputs, g_shareds
 
@@ -113,8 +113,8 @@ def do_gpu_comms(sync, g_shareds, gpu_comm, master_rank):
     shared_IDs = g_shareds.sync.shared_IDs[:sync.n_shared.value]
     comm_ID = sync.comm_ID.value
     if comm_ID == ALL_GATHER:
-        src = g_shareds.gpuarrays(shared_IDs[0])
-        dest = g_shareds.gpuarrays(shared_IDs[1])
+        src = g_shareds.get_gpuarray(shared_IDs[0])
+        dest = g_shareds.get_gpuarray(shared_IDs[1])
         gpu_comm.all_gather(src, dest)
     else:
         if comm_ID in [REDUCE, ALL_REDUCE]:
@@ -122,7 +122,7 @@ def do_gpu_comms(sync, g_shareds, gpu_comm, master_rank):
             avg = op in AVG_ALIASES
             op = "sum" if avg else op
         for shared_ID in shared_IDs:
-            src = g_shareds.gpuarrays(shared_ID)
+            src = g_shareds.get_gpuarray(shared_ID)
             if comm_ID == BROADCAST:
                 gpu_comm.broadcast(src, root=master_rank)
             elif comm_ID == REDUCE:
@@ -154,7 +154,7 @@ def do_cpu_comms(sync, g_shareds, rank):
 
 def get_my_idxs(sync, rank):
     my_idxs = slice(*sync.scat.assign_idxs[rank:rank + 2])
-    if sync.scat.use_idxs.value:
+    if sync.scat.use_idxs_arr.value:
         if "my_idxs_tag" not in sync.scat or \
                 sync.scat.my_idxs_tag != sync.scat.idxs_tag.value:
             alloc_scat_idxs(sync)
@@ -164,8 +164,8 @@ def get_my_idxs(sync, rank):
 
 def alloc_scat_idxs(sync):
     size = sync.scat.idxs_size.value
-    tag = SCAT_IDXS_TAG + "_" + str(sync.scat.idxs_tag.value)
-    sync.scat.idxs_arr = NpShmemArray('i', size, tag, False)
+    tag = SCAT_IDXS_TAG + str(sync.scat.idxs_tag.value)
+    sync.scat.idxs_arr = NpShmemArray('int32', size, tag, False)
     sync.scat.my_idxs_tag = sync.scat.idxs_tag.value
 
 

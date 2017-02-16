@@ -7,12 +7,14 @@ SynkFunction is base class for master and worker Function classes.
 """
 
 # import gtimer as gt
+import ipdb
 
 import numpy as np
 import theano
+from ctypes import c_bool
 
 from .common import PID
-from .shmemarray import NpShmemArray
+from .shmemarray import NpShmemArray, ShmemRawArray
 
 
 class struct(dict):
@@ -97,7 +99,7 @@ class SynkVariables(struct):
         tag = self.tag_pre + str(var_ID) + "_" + str(self.sync.tags[var_ID])
         if rank is not None:
             tag += "_" + str(rank)
-        shmem = NpShmemArray(self.ctypes[var_ID], shape, tag, self.create)
+        shmem = NpShmemArray(self.dtypes[var_ID], shape, tag, self.create)
         self.shmems[var_ID] = shmem
         return shmem
 
@@ -107,10 +109,10 @@ class SynkVariables(struct):
         if self.num > 0:
             shape_tag = self.tag_pre + SHAPES_TAG
             tags_tag = self.tag_pre + TAGS_TAG
-            shapes = [NpShmemArray('i', ndim, shape_tag + str(idx), self.create)
+            shapes = [NpShmemArray('int32', ndim, shape_tag + str(idx), self.create)
                         for idx, ndim in enumerate(self.ndims)]
             self.sync = struct(
-                tags=NpShmemArray('i', self.num, tags_tag, self.create),
+                tags=NpShmemArray('int32', self.num, tags_tag, self.create),
                 shapes=shapes,
             )
 
@@ -149,7 +151,7 @@ class SynkVariables(struct):
         vars_data is a dict with keys: var or name, values: data array
         variables is optional argument to use subset of vars_data
         """
-        variables = vars_data.keys() if variables is None else variables
+        variables = vars_data if variables is None else variables
         var_IDs = self.get_IDs(variables)
         shmems = dict()
         for var_ID, var in zip(var_IDs, variables):
@@ -179,7 +181,7 @@ class SynkVariables(struct):
         return shmems
 
     def get_IDs(self, variables):
-        if not isinstance(variables, (list, tuple)):
+        if not isinstance(variables, (list, tuple, dict)):
             variables = (variables,)
         var_IDs = list()
         for var in variables:
@@ -278,7 +280,7 @@ class Shareds(SynkVariables):
         super().build_sync()
         if self.sync is not None:
             self.sync.shared_IDs = \
-                NpShmemArray('i', self.num, SHRD_IDS_TAG, self.create)
+                NpShmemArray('int32', self.num, SHRD_IDS_TAG, self.create)
 
     def set_avg_facs(self, n_gpu):
         for avg_fac, dtype in zip(self.avg_facs, self.dtypes):
@@ -383,21 +385,20 @@ class SynkFunction(object):
         self._input_IDs = input_IDs
         self._collect_modes = collect_modes
         self._reduce_ops = reduce_ops
+        self._n_outputs = len(collect_modes)
 
     def _build_sync(self):
-        n_outputs = len(self._collect_modes)
         tag_ID = str(self._ID)
-        if n_outputs == 0:
+        if self._n_outputs == 0:
             output_subset = []
         else:
-            output_subset = NpShmemArray(
-                np.bool,
-                len(self._collect_modes),  # (n_outputs)
+            output_subset = ShmemRawArray(
+                c_bool,
+                [True] * self._n_outputs,
                 OTPT_SBST_TAG + tag_ID,
                 self._create,
             )
-            output_subset[:] = True
-        self.sync = struct(
+        self._sync = struct(
             output_subset=output_subset,
         )
 

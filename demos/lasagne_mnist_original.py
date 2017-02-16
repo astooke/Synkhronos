@@ -284,6 +284,7 @@ def main(model='mlp', num_epochs=500):
     # Compile a second function computing the validation loss and accuracy:
     val_fn = theano.function([input_var, target_var], [test_loss, test_acc])
 
+
     # Finally, launch the training loop.
     print("Starting training...")
     # We iterate over epochs:

@@ -20,8 +20,8 @@ from .common import (PKL_FILE, FUNCTION, GPU_COMM, BROADCAST, REDUCE, ALL_REDUCE
                     ALL_GATHER, GATHER, CPU_COMM, AVG_ALIASES, SCATTER,
                     SCAT_IDXS_TAG)
 from .util import (get_n_gpu, build_sync, check_collect, check_op,
-                   get_worker_reduce_ops, check_scat_types, get_shared_IDs,
-                   _assign_scat_idx)
+                   get_worker_reduce_ops, check_batch_types, get_shared_IDs,
+                   _assign_scat_idxs)
 from .shmemarray import NpShmemArray
 
 
@@ -74,7 +74,6 @@ class Function(SynkFunction):
         self._input_vars = [g.inputs.vars[i] for i in self._input_IDs]
         self._output_to_cpu = [g.outputs.to_cpu[i] for i in self._output_IDs]
         self._output_avg_funcs = [g.outputs.avg_funcs[i] for i in self._output_IDs]
-        self._n_outputs = len(output_IDs)
         self._previous_batch_size = None
         self._my_slice = None
         self._previous_output_subset = None
@@ -125,20 +124,17 @@ class Function(SynkFunction):
         check_active()
         output_subset = kwargs.pop("output_subset", None)
         oversize = kwargs.pop("oversize", None)
-        scat_idxs = kwargs.pop("scat_idxs", None)
-        scat_slice = kwargs.pop("scat_slice", None)
-        scat_size = kwargs.pop("scat_size", None)
-        scat_arg = check_scat_types(scat_idxs, scat_slice, scat_size)
-
+        batch = kwargs.pop("batch", None)
+        batch = check_batch_types(batch)
         organized_inputs = self._organize_inputs(g.inputs, args, kwargs)
         if organized_inputs:
             g.inputs.update_shmems(organized_inputs, oversize=oversize)
-        assign_scat_idx(g.sync, g.n_gpu, g.inputs, self._input_IDs, scat_arg)
+        assign_scat_idxs(g.sync, g.n_gpu, g.inputs, self._input_IDs, batch)
         output_set = self._share_output_subset(output_subset)
         g.sync.exec_ID.value = FUNCTION
         g.sync.func_ID.value = self._ID
         g.sync.barriers.exec_in.wait()
-        my_inputs = self._get_my_inputs(g.inputs)
+        my_inputs = self._get_my_inputs(g.sync, g.inputs)
         my_results = self._call_theano_function(my_inputs, output_subset)  # always a list
 
         results = self._collect_results(g.gpu_comm, my_results, output_set)  # always returns list
@@ -254,7 +250,7 @@ class Function(SynkFunction):
         # TODO: update either this or build_sync to make them match.
         if output_subset != self._previous_output_subset:
             if output_subset is None:
-                self._output_subset_shmem[:] = True
+                self._sync.output_subset[:] = [True] * self._n_outputs
             else:
                 if not isinstance(output_subset, list):
                     raise TypeError("Optional param output_subset must be a "
@@ -265,18 +261,18 @@ class Function(SynkFunction):
                             "list of ints.")
                     if idx < 0 or idx > self._n_outputs - 1:
                         raise ValueError("Output_subset entry out of range.")
-                self._output_subset_shmem[:] = False
+                self._sync.output_subset[:] = [False] * self._n_outputs
                 for idx in output_subset:
-                    self._output_subset_shmem[idx] = True
+                    self._sync.output_subset[idx] = True
             self._previous_output_subset = output_subset
-        output_set = [i for i, x in enumerate(self._output_subset_shmem) if x]
+        output_set = [i for i, x in enumerate(self._sync.output_subset) if x]
         return output_set
 
     def _get_my_inputs(self, sync, g_inputs):
+        my_idxs = slice(*sync.scat.assign_idxs[self._rank:self._rank + 2])
+        if sync.scat.use_idxs_arr.value:
+            my_idxs = sync.scat.idxs_arr[my_idxs]
         my_inputs = list()
-        my_idxs = slice(*sync.scat.assign_idx[self._rank:self._rank + 2])
-        if self.sync.scat.use_idxs:
-            my_idxs = self.sync.scat_idxs[my_idxs]
         for input_ID in self._input_IDs:
             my_inputs.append(g_inputs.shmems[input_ID][my_idxs])
         return my_inputs
@@ -424,7 +420,7 @@ def set_shmems(vars_data, oversize=None):
         Dict: Numpy-wrapped shared memory arrays under the keys provided.
     """
     check_active()
-    all_vars = vars_data.keys()
+    all_vars = tuple(vars_data.keys())
     input_vars, shared_vars = segregate_input_shared(all_vars)
     shmems = g.inputs.update_shmems(vars_data, input_vars, oversize)
     shared_shmems = g.shareds.update_shmems(vars_data, shared_vars, oversize)
@@ -459,18 +455,18 @@ def segregate_input_shared(variables):
     return input_vars, shared_vars
 
 
-def assign_scat_idx(sync, n_gpu, g_vars, var_IDs, scat_arg):
+def assign_scat_idxs(sync, n_gpu, g_vars, var_IDs, batch):
     """ Used in functions and in scatter collective """
     sizes = [g_vars.sync.shapes[var_ID][0] for var_ID in var_IDs]
-    sync.scat.assign_idx[:] = _assign_scat_idx(n_gpu, sizes, scat_arg)
-    if not isinstance(scat_arg, (int, slice)):
-        sync.scat.use_idxs.value = True
-        n_idxs = len(scat_arg)
-        if n_idxs > sync.scat.idxs_arr.size:
+    sync.scat.assign_idxs[:] = _assign_scat_idxs(n_gpu, sizes, batch)
+    if not isinstance(batch, (int, slice)):
+        sync.scat.use_idxs_arr.value = True
+        n_idxs = len(batch)
+        if sync.scat.idxs_arr is None or n_idxs > sync.scat.idxs_arr.size:
             alloc_scat_idxs(sync, n_idxs)  # (will be oversized)
-        sync.scat.idxs_arr[:n_idxs] = scat_arg
+        sync.scat.idxs_arr[:n_idxs] = batch
     else:
-        sync.scat.use_idxs.value = False
+        sync.scat.use_idxs_arr.value = False
 
 
 def alloc_scat_idxs(sync, n_idxs):
@@ -478,7 +474,7 @@ def alloc_scat_idxs(sync, n_idxs):
     sync.scat.idxs_tag.value += 1
     sync.scat.idxs_size.value = size
     tag = SCAT_IDXS_TAG + str(sync.scat.idxs_tag.value)
-    sync.scat.idxs_arr = NpShmemArray('i', size, tag)
+    sync.scat.idxs_arr = NpShmemArray('int32', size, tag)
 
 
 ###############################################################################
@@ -488,13 +484,13 @@ def alloc_scat_idxs(sync, n_idxs):
 ###############################################################################
 
 
-def gpu_comm_prep(comm_ID, functions=None, shared_vars=None,
+def gpu_comm_prep(comm_ID, shared_vars=None, functions=None,
                   has_op=False, op=None):
     """ Not called by user but using direct globals access to streamline. """
     check_active()
     g.sync.exec_ID.value = GPU_COMM
     g.sync.comm_ID.value = comm_ID
-    shared_IDs = get_shared_IDs(g.shareds, functions, shared_vars)
+    shared_IDs = get_shared_IDs(g.shareds, shared_vars, functions)
     shared_IDs = tuple(range(g.shareds.num)) if not shared_IDs else shared_IDs
     n_shared = len(shared_IDs)
     g.shareds.sync.shared_IDs[:n_shared] = shared_IDs
@@ -524,7 +520,7 @@ def broadcast(shared_vars=None, functions=None):
         shared_vars (None, optional): names or vars to be broadcast
         functions (None, optional): functions to have all shared vars broadcast
     """
-    shared_IDs = gpu_comm_prep(BROADCAST, functions, shared_vars)
+    shared_IDs = gpu_comm_prep(BROADCAST, shared_vars, functions)
     g.sync.barriers.exec_in.wait()
     for shared_ID in shared_IDs:
         src = g.shareds.get_gpuarray(shared_ID)
@@ -550,7 +546,7 @@ def gather(shared_vars=None, functions=None, dest=None, nd_up=None):
     Returns:
         List of GPUArrays, if no destination provided.
     """
-    shared_IDs = gpu_comm_prep(GATHER, functions, shared_vars)
+    shared_IDs = gpu_comm_prep(GATHER, shared_vars, functions)
     if len(shared_IDs) > 1 and dest is not None:
         raise ValueError("When specifying destination, can only gather one var.")
     g.sync.barriers.exec_in.wait()
@@ -584,7 +580,7 @@ def reduce(shared_vars=None, functions=None, op="avg", in_place=True, dest=None)
     Returns:
         List of GPUArrays, if no destination provided and not in-place.
     """
-    shared_IDs, op, avg = gpu_comm_prep(REDUCE, functions, shared_vars, True, op)
+    shared_IDs, op, avg = gpu_comm_prep(REDUCE, shared_vars, functions, True, op)
     if len(shared_IDs) > 1 and dest is not None:
         raise ValueError("When specifying desination, can only reduce one var.")
     if avg and (not in_place or dest is not None):
@@ -613,7 +609,7 @@ def all_reduce(shared_vars=None, functions=None, op="avg"):
         op (str, optional): e.g. "sum, prod, min, max, avg"
     """
     shared_IDs, op, avg = \
-        gpu_comm_prep(ALL_REDUCE, functions, shared_vars, True, op)
+        gpu_comm_prep(ALL_REDUCE, shared_vars, functions, True, op)
     g.sync.barriers.exec_in.wait()
     for shared_ID in shared_IDs:
         src = g.shareds.get_gpuarray(shared_ID)
@@ -650,7 +646,7 @@ def all_gather(source, dest):
 ###############################################################################
 
 
-def scatter(shared_vars_data, scat_idxs=None, scat_slice=None, scat_size=None):
+def scatter(shared_vars_data, batch=None):
     """ Scatter data and push to master and worker GPU Theano shared variables.
 
     Input `shared_vars_data` can be either a dictionary, a list, or a single
@@ -673,17 +669,16 @@ def scatter(shared_vars_data, scat_idxs=None, scat_slice=None, scat_size=None):
         ValueError: If no input data and shared memory does not exist yet.
     """
     check_active()
-    scat_arg = check_scat_types(scat_idxs, scat_slice, scat_size)
+    batch = check_batch_types(batch)
+    shared_IDs = g.shareds.get_IDs(shared_vars_data)
     if isinstance(shared_vars_data, dict):
         g.shareds.update_shmems(shared_vars_data)
-        shared_IDs = g.shareds.get_IDs(shared_vars_data.keys())
     else:
-        shared_IDs = g.shareds.get_IDs(shared_vars_data)
         for shared_ID, var in zip(shared_IDs, shared_vars_data):
             if g.shareds.shmems[shared_ID] is None:
                 raise ValueError("Called scatter with no input data, but shared "
                     "memory does not exist yet for variable: ", var)
-    assign_scat_idx(g.sync, g.n_gpu, g.shareds, shared_IDs, scat_arg)
+    assign_scat_idxs(g.sync, g.n_gpu, g.shareds, shared_IDs, batch)
 
     n_shared = len(shared_IDs)
     g.sync.exec_ID.value = CPU_COMM

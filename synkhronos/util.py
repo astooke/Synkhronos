@@ -63,8 +63,8 @@ def build_sync(n_gpu):
         exec_out=mp.Barrier(n_gpu),
     )
     scat = struct(
-        assign_idx=np.ctypeslib.as_array(mp.RawArray('i', n_gpu + 1)),
-        use_idxs=mp.RawValue(ctypes.c_bool, False),
+        assign_idxs=np.ctypeslib.as_array(mp.RawArray('i', n_gpu + 1)),
+        use_idxs_arr=mp.RawValue(ctypes.c_bool, False),
         idxs_tag=mp.RawValue('i', 0),
         idxs_size=mp.RawValue('i', 0),
         idxs_arr=None,
@@ -139,58 +139,47 @@ def check_collect(outputs, collect_modes, reduce_ops):
 ###############################################################################
 #                       Shared Memory Management                              #
 
-def _assign_scat_idx(n_gpu, shmem_sizes, scat_arg):
-    if scat_arg is not None:
-        if isinstance(scat_arg, int):  # (scat_size is used)
-            max_idx = scat_arg
+def _assign_scat_idxs(n_gpu, shmem_sizes, batch):
+    if batch is not None:
+        if isinstance(batch, int):  # (scat_size is used)
+            max_idx = batch
             space_start = 0
-            space_end = scat_arg
-        elif isinstance(scat_arg, slice):  # (scat_slice is used)
-            max_idx = scat_arg.stop
-            space_start = scat_arg.start
-            space_end = scat_arg.stop
+            space_end = batch
+        elif isinstance(batch, slice):  # (scat_slice is used)
+            max_idx = batch.stop
+            space_start = batch.start
+            space_end = batch.stop
         else:  # (scat_idxs is used)
-            max_idx = max(scat_arg)
+            max_idx = max(batch)
             space_start = 0
-            space_end = len(scat_arg)
+            space_end = len(batch)
         if max_idx > min(shmem_sizes):
             raise ValueError("Requested index out of range of shared memory.")
     else:  # (i.e. no scat input directive provided, use full arrays)
         space_start = 0
         space_end = shmem_sizes[0]
         if shmem_sizes.count(space_end) != len(shmem_sizes):  # (fast)
-            raise ValueError("If not providing scatter directive, all "
+            raise ValueError("If not providing param 'batch', all "
                 "shared memory arrays must be the same size in 0-th "
                 "dimension.  Had 0-th dim sizes: ", shmem_sizes)
     return np.linspace(space_start, space_end, n_gpu + 1, dtype=np.int32)
 
 
-def check_scat_types(scat_idxs, scat_slice, scat_size):
-    if sum([scat_idxs is None, scat_slice is None, scat_size is None]) < 2:
-        raise ValueError("Specify only one of: scat_idxs, scat_slice, scat_size.")
-    if scat_idxs is not None:
-        if not isinstance(scat_idxs, (list, tuple)):
-            if isinstance(scat_idxs, np.ndarray):
-                if scat_idxs.ndim > 1:
-                    raise ValueError("Numpy array for scat_idxs must "
-                        "be 1 dimensional, got: ", scat_idxs.ndim)
-            else:
-                raise TypeError("Param scat_idxs must be a list, tuple "
-                    "or 1-dimensional numpy array of ints.")
-        return scat_idxs
-    elif scat_slice is not None:
-        if not isinstance(scat_slice, slice):
-            if not isinstance(scat_slice, slice):
-                raise TypeError("Param scat_slice must be a slice object.")
-            if scat_slice.step is not None and scat_slice.step > 1:
-                raise NotImplementedError  # (could be done)
-        return scat_slice
-    elif scat_size is not None:
-        if not isinstance(scat_size, int):
-            raise TypeError("Param scat_size must be an integer.")
-        return scat_size
-    else:
-        return None
+def check_batch_types(batch):
+    if batch is not None:
+        if isinstance(batch, (list, tuple)):
+            batch = np.array(batch)
+        if isinstance(batch, np.ndarray):
+            if batch.ndim > 1:
+                raise ValueError("Array for param 'batch' must be "
+                    "1-dimensional, got: ", batch.ndim)
+            if "int" not in batch.dtype.name:
+                raise ValueError("Array for param 'batch' must be integer "
+                    "dtype, got: ", batch.dtype.name)
+        elif not isinstance(batch, (int, slice)):
+            raise TypeError("Param 'batch' must be either an integer, a slice, "
+                "or a list, tuple, or numpy array of integers.")
+    return batch
 
 
 ###############################################################################
