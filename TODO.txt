@@ -1,6 +1,6 @@
 TODO yet... no particular order.
 
-Next item: 27
+Next item: 28
 
 
 
@@ -9,6 +9,7 @@ Next item: 27
 23. Sliced functions for when data batch is too large for GPU
 24. does Theano expose input checking for functions and/or input variables?
 26. Continue to improve error handling during setup/distribute.
+27. Look into the option that unpickling does not more graph analysis.
 
 
 DONE, but maybe not yet tested:

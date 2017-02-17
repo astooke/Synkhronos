@@ -460,7 +460,7 @@ def assign_scat_idxs(sync, n_gpu, g_vars, var_IDs, batch):
     """ Used in functions and in scatter collective """
     sizes = [g_vars.sync.shapes[var_ID][0] for var_ID in var_IDs]
     sync.scat.assign_idxs[:] = _assign_scat_idxs(n_gpu, sizes, batch)
-    if not isinstance(batch, (int, slice)):
+    if batch is not None and not isinstance(batch, (int, slice)):
         sync.scat.use_idxs_arr.value = True
         n_idxs = len(batch)
         if sync.scat.idxs_arr is None or n_idxs > sync.scat.idxs_arr.size:

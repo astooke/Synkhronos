@@ -106,8 +106,11 @@ class SynkVariables(struct):
         if self.num > 0:
             shape_tag = self.tag_pre + SHAPES_TAG
             tags_tag = self.tag_pre + TAGS_TAG
-            shapes = [NpShmemArray('int32', ndim, shape_tag + str(idx), self.create)
-                        for idx, ndim in enumerate(self.ndims)]
+            shapes = list()
+            for idx, ndim in enumerate(self.ndims):
+                ndim = 1 if ndim == 0 else ndim
+                shapes.append(NpShmemArray(
+                    'int32', ndim, shape_tag + str(idx), self.create))
             self.sync = struct(
                 tags=NpShmemArray('int32', self.num, tags_tag, self.create),
                 shapes=shapes,
@@ -134,6 +137,9 @@ class SynkVariables(struct):
             common_dtype = np.find_common_type([data_arr.dtype, dtype], [])
             if common_dtype == dtype:
                 data_arr = data_arr.astype(dtype)  # TODO: avoid recast?
+            elif 'float' in data_arr.dtype.name and 'float' in dtype:
+                print("Downcasting variable: ", data_arr.dtype.name, " to ", dtype)
+                data_arr = data_arr.astype(dtype)
             else:
                 raise TypeError("Non up-castable data type provided for input "
                     "{}, received: {}, expected: {}".format(idx, data_arr.dtype,
@@ -153,6 +159,7 @@ class SynkVariables(struct):
         shmems = dict()
         for var_ID, var in zip(var_IDs, variables):
             try:
+                print("variable: ", var)
                 shmem = self.update_shmem(var_ID, vars_data[var], oversize)
             except Exception as exc:
                 msg = "Error when processing data under key: {}".format(var)

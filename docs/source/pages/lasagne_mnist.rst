@@ -44,7 +44,7 @@ Synkhronos (no `train_loss` collect): **0.53** s  ( **1.4** x)
 
 Synkhronos: **0.66** s  ( **1.1** x)
 
-When the training loss output is not collected and the model parameters are never synchronized, the maximum possible speedup is achieved, for reference.  In this case, it is only a factor of **1.6**, well short of **2**.  For larger minibatches (here 500 was used) and more complex computations, this factor will increase (for the MLP option in this example it is lower).  Note that the size of the minibatch and hence the number of calls per epoch is `not` altered--the same batch is simply scattered.
+When the training loss output is not collected and the model parameters are never synchronized, the maximum possible speedup is achieved, for reference.  In this case, it is only a factor of **1.6**, well short of **2**.  The more compute-bound the program is, the better the speedup will be.  Note that the size of the minibatch and hence the number of calls per epoch is `not` altered--the same batch is simply scattered.
 
 Synchronizing model parameters at every step results in a mild slow-down to **1.4** x.  Synchronizing on a less frequent schedule would decrease this effect and could be traded against iteration performance.
 
