@@ -7,11 +7,8 @@ import numpy as np
 import multiprocessing as mp
 import ctypes
 
-from .common import REDUCE_OPS, AVG_ALIASES
-from .variables import struct, SynkFunction
-
-
-COLLECT_MODES = ["reduce", "gather", None]
+from .common import REDUCE, COLLECT_MODES, REDUCE_OPS, REDUCE_NO_OP
+from .variables import struct, BaseData
 
 
 ###############################################################################
@@ -38,8 +35,10 @@ def get_n_gpu(n_gpu, master_rank):
         p.join()
         n_gpu = mp_n_gpu.value
         if n_gpu == 0:
+            # TODO: CPU-only mode.
             raise RuntimeError("No cuda GPU detected by pygpu.")
         elif n_gpu == 1:
+            # TODO: Allow to run on one GPU.
             raise RuntimeError("Only one GPU detected; just use Theano.)")
         else:
             print("Detected and attempting to use {} GPUs...".format(n_gpu))
@@ -59,116 +58,176 @@ def build_sync(n_gpu):
         distribute=mp.Barrier(n_gpu),
         distribute_out=mp.Barrier(n_gpu),
         delete_pkl=mp.Barrier(n_gpu - 1),
-        exec_in=mp.Barrier(n_gpu),
-        exec_out=mp.Barrier(n_gpu),
+    )
+    init = struct(
+        dict=dictionary,
+        n_user_fcns=mp.RawValue('i', 0),
+        distributed=mp.RawValue(ctypes.c_bool, False),
+        barriers=barriers,
+    )
+    execute = struct(
+        quit=mp.RawValue(ctypes.c_bool, False),
+        ID=mp.RawValue('i', 0),
+        barrier_in=mp.Barrier(n_gpu),
+        barrier_out=mp.Barrier(n_gpu),
+        workers_OK=mp.Value(ctypes.c_bool, True)
+    )
+    IDs = struct(
+        func=mp.RawValue('i', 0),
+        comm=mp.RawValue('i', 0),
+        op=mp.RawValue('i', 0),
+        data=mp.RawValue('i', 0),
+        n_shared=mp.RawValue('i', 0),
+        vars=None,  # (allocated later)
+        datas=None,
+        dtype=mp.RawValue('i', 0),
+        ndim=mp.RawValue('i', 0),
+        shape=np.ctypeslib.as_array(mp.RawArray('i', 10)),  # (ndim <= 10)
+        tag=mp.RawValue('i', 0),
     )
     scat = struct(
         assign_idxs=np.ctypeslib.as_array(mp.RawArray('i', n_gpu + 1)),
         use_idxs_arr=mp.RawValue(ctypes.c_bool, False),
         idxs_tag=mp.RawValue('i', 0),
         idxs_size=mp.RawValue('i', 0),
-        idxs_arr=None,
+        idxs_arr=None,  # (allocated later)
     )
     sync = struct(
-        dict=dictionary,  # use for setup e.g. Clique comm_id; serializes.
-        quit=mp.RawValue(ctypes.c_bool, False),
-        workers_OK=mp.Value(ctypes.c_bool, True),  # (not RawValue)
-        n_user_fcns=mp.RawValue('i', 0),
-        distributed=mp.RawValue(ctypes.c_bool, False),
-        exec_ID=mp.RawValue('i', 0),
-        func_ID=mp.RawValue('i', 0),
-        comm_ID=mp.RawValue('i', 0),
-        op_ID=mp.RawValue('i', 0),
-        n_shared=mp.RawValue('i', 0),
+        init=init,
+        exct=execute,
+        IDs=IDs,
         scat=scat,
-        barriers=barriers,
     )
     return sync
-
-
-###############################################################################
-#                           (distribute)                                      #
-
-
-def get_worker_reduce_ops(synk_functions):
-    reduce_ops_all = [fn.reduce_ops.copy() for fn in synk_functions]
-    for ops in reduce_ops_all:
-        for idx, op in enumerate(ops):
-            if op in AVG_ALIASES:
-                ops[idx] = "sum"  # (no averaging of outputs in workers)
-    return reduce_ops_all
 
 
 ###############################################################################
 #                           (function)                                        #
 
 
-def check_collect(outputs, collect_modes, reduce_ops):
-    if outputs is None:
-        return [], []
-    n_outputs = len(outputs) if isinstance(outputs, (list, tuple)) else 1
-    if not isinstance(collect_modes, (list, tuple)):
-        collect_modes = [collect_modes] * n_outputs
-    if len(collect_modes) != n_outputs:
-        raise ValueError("Number of collect modes does not match number of "
-            "outputs (or enter a single string to be used for all outputs).")
-    for mode in collect_modes:
-        if mode not in COLLECT_MODES:
-            raise ValueError("Unrecognized collect_mode: ", mode,
-                " .  Must be in: ", COLLECT_MODES)
-    if not isinstance(reduce_ops, (list, tuple)):
-        tmp_ops = list()
-        for mode in collect_modes:
-            if mode == "reduce":
-                tmp_ops.append(reduce_ops)
-            else:
-                tmp_ops.append(None)
-        reduce_ops = tmp_ops
-    if len(reduce_ops) != n_outputs:
-        raise ValueError("Number of reduce ops does not match number of "
-            "outputs (use None for non-reduce outputs, or a single string for "
-            "all reduced outputs).")
+def _check_collect_reduce(args, check_list, name):
+    if not isinstance(args, (list, tuple)):
+        args = (args,)
+    for arg in args:
+        if arg not in check_list:
+            raise ValueError("Unrecognized ", name, ": ", arg, ". Must be "
+                "in: ", check_list)
+
+
+def _build_collect_reduce(n_outputs, args, check_list, name):
+    _check_collect_reduce(args, check_list, name)
+    if isinstance(args, (list, tuple)):
+        if len(args) != n_outputs:
+            raise ValueError("Number of ", name, " args does not match number "
+                "of outputs (or enter a single string to be used for all "
+                "outputs).  None is a valid entry.")
+        arg_IDs = tuple([check_list.index(arg) for arg in args])
     else:
-        for idx, op in enumerate(reduce_ops):
-            if collect_modes[idx] == "reduce":
-                if op not in REDUCE_OPS:
-                    raise ValueError("Unrecognized reduce op: ", op)
-    return collect_modes, reduce_ops
+        arg_ID = check_list.index(arg)
+        arg_IDs = (arg_ID,) * n_outputs
+    return arg_IDs
+
+
+def build_collect_IDs(n_outputs, collect_modes):
+    return _build_collect_reduce(n_outputs, collect_modes, COLLECT_MODES, "collect mode")
+
+
+def build_reduce_IDs(n_outputs, reduce_ops):
+    return _build_collect_reduce(n_outputs, reduce_ops, REDUCE_OPS, "reduce operation")
+
+
+def check_collect_vs_op_IDs(collect_IDs, reduce_IDs):
+    for idx, (collect_ID, reduce_ID) in enumerate(zip(collect_IDs, reduce_IDs)):
+        if collect_ID == REDUCE:
+            if reduce_ID == REDUCE_NO_OP:
+                raise ValueError("Had reduce operation 'None' for reduce "
+                    "collection mode.")
+        else:
+            reduce_IDs[idx] = REDUCE_NO_OP  # ignores any input value
+    return reduce_IDs
+
+
+def build_collect(outputs, collect_modes, reduce_ops):
+    if outputs is None:
+        return (), ()
+    n_outputs = len(outputs) if isinstance(outputs, (list, tuple)) else 1
+    collect_IDs = build_collect_IDs(n_outputs, collect_modes)
+    reduce_IDs = build_reduce_IDs(n_outputs, reduce_ops)
+    reduce_IDs = check_collect_vs_op_IDs(collect_IDs, reduce_IDs)
+    return collect_IDs, reduce_IDs
+
+
+def check_ouput_subset(n_outputs, output_subset):
+    if not isinstance(output_subset, list):
+        raise TypeError("Optional param 'output_subset' must be a "
+            "list of ints.")
+    for idx in output_subset:
+        if not isinstance(idx, int):
+            raise TypeError("Optional param 'output_subset' must a "
+                "list of ints.")
+        if idx < 0 or idx > n_outputs - 1:
+            raise ValueError("Output subset entry out of range: ", idx)
+
+
+def check_synk_inputs(synk_datas, dtypes, ndims):
+    for idx, (data, dtype, ndim) in enumerate(zip(synk_datas, dtypes, ndims)):
+        if not isinstance(data, BaseData):
+            raise ValueError("All function inputs must be of type SynkData.")
+        if data.dtype != dtype:
+            raise TypeError("Incorrect input dtype for position {}; "
+                "expected: {}, received: {}.".format(idx, dtype, data.dtype))
+        if data.ndim != ndim:
+            raise TypeError("Incorrect input dimensions for position {}; "
+                "expected: {}, received: {}.".format(idx, ndim, data.ndim))
+        data._check_data()
 
 
 ###############################################################################
 #                       Shared Memory Management                              #
 
-def _assign_scat_idxs(n_gpu, shmem_sizes, batch):
+
+def oversize_shape(data, oversize):
+    """ Master only """
+    shape = data.shape
+    if oversize is not None:
+        if oversize < 1 or oversize > 2:
+            raise ValueError("Param 'oversize' must be in range 1 to 2"
+                " (direct multiplicative factor on 0-th index size).")
+        if shape:
+            shape = list(shape)
+            shape[0] = int(np.ceil(shape[0] * oversize))
+    return shape
+
+
+def build_scat_idxs(n_gpu, lengths, batch):
     if batch is not None:
-        if isinstance(batch, int):  # (scat_size is used)
+        if isinstance(batch, int):  # (size from 0 is used)
             max_idx = batch
             space_start = 0
             space_end = batch
-        elif isinstance(batch, slice):  # (scat_slice is used)
+        elif isinstance(batch, slice):  # (slice is used)
             max_idx = batch.stop
             space_start = batch.start
             space_end = batch.stop
-        else:  # (scat_idxs is used)
+        else:  # (explicit indices are used)
             max_idx = max(batch)
             space_start = 0
             space_end = len(batch)
-        if max_idx > min(shmem_sizes):
-            raise ValueError("Requested index out of range of shared memory.")
-    else:  # (i.e. no scat input directive provided, use full arrays)
+        if max_idx > min(lengths):
+            raise ValueError("Requested index out of range of input lengths.")
+    else:  # (i.e. no batch directive provided, use full array lengths)
         space_start = 0
-        space_end = shmem_sizes[0]
-        if shmem_sizes.count(space_end) != len(shmem_sizes):  # (fast)
+        space_end = lengths[0]
+        if lengths.count(space_end) != len(lengths):  # (fast)
             raise ValueError("If not providing param 'batch', all "
-                "shared memory arrays must be the same size in 0-th "
-                "dimension.  Had 0-th dim sizes: ", shmem_sizes)
+                "inputs must be the same length.  Had lengths: ", lengths)
     return np.linspace(space_start, space_end, n_gpu + 1, dtype=np.int32)
 
 
 def check_batch_types(batch):
     if batch is not None:
         if isinstance(batch, (list, tuple)):
-            batch = np.array(batch)
+            batch = np.array(batch, dtype='int32')
         if isinstance(batch, np.ndarray):
             if batch.ndim > 1:
                 raise ValueError("Array for param 'batch' must be "
@@ -186,40 +245,19 @@ def check_batch_types(batch):
 #                           GPU Collectives                                   #
 
 
-def get_shared_IDs(g_shareds, shared_vars=None, synk_functions=None):
-    shared_IDs = list()
-    if synk_functions is not None:
-        if not isinstance(synk_functions, (list, tuple)):
-            synk_functions = (synk_functions,)
-        for synk_fcn in synk_functions:
-            if not isinstance(synk_fcn, SynkFunction):
-                raise TypeError("Expected Synkhronos function(s).")
-            shared_IDs += synk_fcn._shared_IDs
-    if shared_vars is not None:
-        if not isinstance(shared_vars, (list, tuple)):
-            shared_vars = (shared_vars,)
-        for var in shared_vars:
-            if var is None:
-                raise ValueError("Received None for one or mored shared "
-                    "variables.")
-            if var in g_shareds.names:
-                shared_IDs.append(g_shareds.names.index(var))
-            elif var in g_shareds.vars:
-                shared_IDs.append(g_shareds.vars.index(var))
-            else:
-                raise ValueError("Unrecognized shared variable or name: ", var)
-    return tuple(sorted(set(shared_IDs)))
-
-
-def check_op(op):
-    if op not in REDUCE_OPS:
-        raise ValueError("Unrecognized reduction operator: ", op,
-            ", must be one of: ", [k for k in REDUCE_OPS.keys()])
-    return REDUCE_OPS[op]
+def get_op_from_avg(op):
+    _check_collect_reduce(op, REDUCE_OPS[:-1], "reduce operation")  # (disallow 'None')
+    op_ID = REDUCE_OPS.index(op)  # (worker can handle avg fine)
+    if op == "avg":
+        op = "sum"
+        avg = True
+    else:
+        avg = False
+    return op, avg, op_ID
 
 
 ###############################################################################
-#                           Other                                             #
+#                           User                                              #
 
 def make_slices(data_collection):
     """Make a set of slice objects according to lengths of data subsets.

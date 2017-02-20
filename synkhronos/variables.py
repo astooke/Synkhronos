@@ -10,7 +10,7 @@ import numpy as np
 import theano
 from ctypes import c_bool
 
-from .common import PID
+from .common import PID, get_my_scat_idxs
 from .shmemarray import NpShmemArray, ShmemRawArray
 
 
@@ -23,272 +23,115 @@ class struct(dict):
 
 ###############################################################################
 #                                                                             #
-#                    Inputs, Shareds   (master & workers)                     #
+#              Inputs and  Shareds Registries   (master & workers)            #
 #                                                                             #
 ###############################################################################
 
 
 PRE = "/synk_" + PID
 
-SHRD_IDS_TAG = PRE + "_shared_ids_"
-ASGN_IDX_TAG = PRE + "_assign_idx_"
+# Functions
 OTPT_SBST_TAG = PRE + "_output_subset_"
-BCAST_BTS_TAG = PRE + "_scat_bts_"
-BCAST_ID_TAG = PRE + "_scat_id_"
-BCAST_IDXS_TAG = PRE + "_scat_idxs_"
-BCAST_IDXS_SIZE_TAG = PRE + "_scat_idxs_size_"
+CLCT_MD_TAG = PRE + "_collect_modes_"
+RDC_OP_TAG = PRE + "_reduce_ops_"
+IN_DATA_ID_TAG = PRE + "_in_data_ids_"
 
-INPT_TAG_PRE = PRE + "_inpt_"
-SHRD_TAG_PRE = PRE + "_shrd_"
-TAGS_TAG = "_tags_"
-SHAPES_TAG = "_shapes_"
-
+# Datas
+DATA_TDN_TAG = "_data_tdn_"
+DATA_SHAPE_TAG = "_data_shape_"
+DATA_TAG = "_synk_data_"
 
 AVG_FAC_NAME = "__synk_avg_fac__"
 
 
-class SynkVariables(struct):
+###############################################################################
+#                          Inputs Registry                                    #
 
-    def __init__(self, create):
+class Inputs(struct):
+
+    implicit = False
+
+    def __init__(self):
         super().__init__()
-        self.create = create  # (True in master, False in workers)
         self.vars = list()
         self.names = list()
-        self.dtypes = list()
-        self.shmems = list()
-        self.tags = list()
-        self.ndims = list()
-        self.num = 0
-        self.sync = None
 
     def register_func(self, f):
         var_IDs = list()
         n_vars = len(f.inv_finder)
         for theano_In in [f.inv_finder[f.finder[i]] for i in range(n_vars)]:
-            if theano_In.implicit == self.implicit:
-                var_IDs.append(self.include(theano_In.variable))
+            if self.implicit == theano_In.implicit:
+                var_IDs.append(self.register(theano_In.variable))
         return tuple(var_IDs)
 
-    def include(self, var):
-        is_new_var = var not in self.vars
-        if not is_new_var:
-            var_ID = self.vars.index(var)
+    def register(self, variable):
+        if variable in self.vars:
+            var_ID = self.vars.index(variable)
         else:
-            var_ID = self.num
-            self.vars.append(var)
-            self.names.append(var.name)
-            dtype = var.type.dtype
-            self.dtypes.append(dtype)
-            self.ndims.append(var.type.ndim)
-            self.tags.append(0)
-            self.shmems.append(None)
-            self.num += 1
+            var_ID = len(self.vars)
+            self.vars.append(variable)
+            self.names.append(variable.name)
         return var_ID
 
-    def alloc_shmem(self, var_ID, shape=None, rank=None):
-        """ rank currently unused: maybe for chunking shared memory by worker"""
-        if self.create:  # (only in master)
-            self.sync.tags[var_ID] += 1
-            self.sync.shapes[var_ID][:] = shape
-        else:  # (only in worker)
-            self.tags[var_ID] = self.sync.tags[var_ID]
-            shape = self.sync.shapes[var_ID]
-        tag = self.tag_pre + str(var_ID) + "_" + str(self.sync.tags[var_ID])
-        if rank is not None:
-            tag += "_" + str(rank)
-        shmem = NpShmemArray(self.dtypes[var_ID], shape, tag, self.create)
-        self.shmems[var_ID] = shmem
-        return shmem
+    def is_member(self, var_or_name):
+        member = False
+        if var_or_name in self.vars:
+            member = True
+        elif var_or_name is not None and var_or_name in self.names:
+            member = True
+        return member
 
-    def build_sync(self):
-        if self.sync is not None:
-            raise RuntimeError("Tried to build variables sync a second time.")
-        if self.num > 0:
-            shape_tag = self.tag_pre + SHAPES_TAG
-            tags_tag = self.tag_pre + TAGS_TAG
-            shapes = list()
-            for idx, ndim in enumerate(self.ndims):
-                ndim = 1 if ndim == 0 else ndim
-                shapes.append(NpShmemArray(
-                    'int32', ndim, shape_tag + str(idx), self.create))
-            self.sync = struct(
-                tags=NpShmemArray('int32', self.num, tags_tag, self.create),
-                shapes=shapes,
-            )
-
-    def update_shmem(self, var_ID, data_arr, oversize=None):
-        """ Master-only """
-        data_arr = self.check_data_array(var_ID, data_arr)
-        shmem = self.shmems[var_ID]
-        memory_OK, data_OK = check_memory(shmem, data_arr)
-        if not memory_OK:
-            shape = oversize_shape(data_arr.shape, oversize)
-            shmem = self.alloc_shmem(var_ID, shape)
-        if not data_OK:
-            shmem[:data_arr.shape[0]] = data_arr
-        return shmem
-
-    def check_data_array(self, var_ID, data_arr, idx=""):
-        dtype = self.dtypes[var_ID]
-        ndim = self.ndims[var_ID]
-        if not isinstance(data_arr, np.ndarray):
-            data_arr = np.asarray(data_arr)  # TODO: force type?
-        if data_arr.dtype != dtype:
-            common_dtype = np.find_common_type([data_arr.dtype, dtype], [])
-            if common_dtype == dtype:
-                data_arr = data_arr.astype(dtype)  # TODO: avoid recast?
-            elif 'float' in data_arr.dtype.name and 'float' in dtype:
-                print("Downcasting variable: ", data_arr.dtype.name, " to ", dtype)
-                data_arr = data_arr.astype(dtype)
-            else:
-                raise TypeError("Non up-castable data type provided for input "
-                    "{}, received: {}, expected: {}".format(idx, data_arr.dtype,
-                    dtype))
-        if data_arr.ndim != ndim:
-            raise TypeError("Wrong data ndim provided for input "
-                "{}: {}".format(idx, data_arr.ndim))
-        return data_arr
-
-    def update_shmems(self, vars_data, variables=None, oversize=None):
-        """
-        vars_data is a dict with keys: var or name, values: data array
-        variables is optional argument to use subset of vars_data
-        """
-        variables = vars_data if variables is None else variables
-        var_IDs = self.get_IDs(variables)
-        shmems = dict()
-        for var_ID, var in zip(var_IDs, variables):
-            try:
-                print("variable: ", var)
-                shmem = self.update_shmem(var_ID, vars_data[var], oversize)
-            except Exception as exc:
-                msg = "Error when processing data under key: {}".format(var)
-                raise Exception(msg) from exc
-            shmems[var] = shmem
-        return shmems
-
-    # TODO: clean up all these helpers...just keep the ones ended up using.
-    def get_shmems_vars(self, variables):
-        var_IDs = self.get_IDs(variables)
-        return self.get_shmems(var_IDs)
-
-    def is_member(self, variable):
-        if variable in self.names or variable in self.vars:
-            return True
+    def get_ID(self, var_or_name):
+        if var_or_name in self.vars:
+            return self.vars.index(var_or_name)
+        elif var_or_name is not None and var_or_name in self.names:
+            return self.names.index(var_or_name)
         else:
-            return False
+            raise ValueError("Unrecognized variable or name: ", var_or_name)
 
-    def get_shmems(self, var_IDs):
-        shmems = list()
-        for var_ID in var_IDs:
-            shmems.append(self.shmems[var_ID])
-        return shmems
-
-    def get_IDs(self, variables):
-        if not isinstance(variables, (list, tuple, dict)):
-            variables = (variables,)
+    def get_IDs(self, vars_or_names):
+        if not isinstance(vars_or_names, (list, tuple)):
+            vars_or_names = (vars_or_names,)
         var_IDs = list()
-        for var in variables:
-            if var is None:
-                raise TypeError("Recieved NoneType for at least one variable.")
-            elif var in self.vars:
-                var_IDs.append(self.vars.index(var))
-            elif var in self.names:
-                var_IDs.append(self.names.index(var))
-            else:
-                raise ValueError("Unrecognized variable instance or name: ", var)
+        for var in vars_or_names:
+            var_IDs.append(self.get_ID(var))
         if len(set(var_IDs)) != len(var_IDs):
             raise ValueError("Redundant variables provided.")
         return tuple(var_IDs)
 
 
-def oversize_shape(shape, oversize):
-    if oversize is not None:
-        if oversize < 1 or oversize > 2:
-            raise ValueError("Param 'oversize' must be in range 1 to 2"
-                " (direct multiplicative factor on 0-th index size).")
-        shape = list(shape)
-        shape[0] = int(np.ceil(shape[0] * oversize))
-    return shape
-
-
-def check_memory(shmem, data_arr):
-    memory_OK = False
-    data_OK = False
-    if shmem is not None:
-        if data_arr.shape[1:] == shmem.shape[1:] and \
-                data_arr.shape[0] <= shmem.shape[0]:
-            memory_OK = True  # (existing memory big enough)
-            input_addr, _ = data_arr.__array_interface__["data"]
-            shmem_addr, _ = shmem.__array_interface__["data"]
-            if input_addr == shmem_addr:
-                if data_arr.__array_interface__["strides"] is not None:
-                    print("Warning: Cannot keep strided view of memory as "
-                        "input, will copy data into shmem array.")
-                else:
-                    data_OK = True  # (existing memory passed as input)
-    return memory_OK, data_OK
-
-
 ###############################################################################
-#                               Inputs                                        #
+#                           Shared Variables Registry                         #
 
-
-class Inputs(SynkVariables):
-
-    implicit = False
-    tag_pre = INPT_TAG_PRE
-
-
-###############################################################################
-#                               Shareds                                       #
-
-
-class Shareds(SynkVariables):
+class Shareds(Inputs):
 
     implicit = True
-    tag_pre = SHRD_TAG_PRE
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.avg_funcs = list()
+    def __init__(self, make_avg):
+        super().__init__()
+        self.make_avg = make_avg
         self.avg_facs = list()
+        self.avg_funcs = list()
 
-    def get_gpuarray(self, idx):
+    def get_gpu_array(self, idx):
         """ Re-reference the variable in case GPU allocation has changed. """
         return self.vars[idx].container.data
 
-    def include(self, var):
-        var_ID = super().include(var)
-        if self.create and var_ID >= len(self.avg_funcs):  # (only in master)
-            avg_fac = theano.shared(np.array(1, dtype=self.dtypes[var_ID]),
-                                    name=AVG_FAC_NAME)
-            avg_func = theano.function([], updates={var: var * avg_fac})
-            self.avg_facs.append(avg_fac)
-            self.avg_funcs.append(avg_func)
-        return var_ID
-
-    # NOTE: in future, may bring back separate shmem for each rank, but not now
-    # def build_shmem(self, shared_ID, n_gpu, master_rank):
-    #     """ Only in master """
-    #     shape = self.vars[shared_ID].container.data.shape
-    #     shmems = list()
-    #     for rank in range(n_gpu):
-    #         if rank != master_rank:
-    #             shmems.append(self.alloc_shmem(shared_ID, shape, rank))
-    #         else:
-    #             shmems.append(None)
-    #     self.shmems[shared_ID] = shmems
-
-    def build_sync(self):
-        super().build_sync()
-        if self.sync is not None:
-            self.sync.shared_IDs = \
-                NpShmemArray('int32', self.num, SHRD_IDS_TAG, self.create)
+    def register(self, var):
+        old_n = len(self.vars)
+        var_ID = super().register(var)
+        if len(self.vars) > old_n:
+            if self.make_avg:  # (shareds in master only)
+                dtype = self.vars[var_ID].type.dtype
+                avg_fac = theano.shared(np.array(1, dtype=dtype), name=AVG_FAC_NAME)
+                avg_func = theano.function([], updates={var: var * avg_fac})
+                self.avg_facs.append(avg_fac)
+                self.avg_funcs.append(avg_func)
+            self.synk_datas.append(None)
 
     def set_avg_facs(self, n_gpu):
-        for avg_fac, dtype in zip(self.avg_facs, self.dtypes):
-            if "int" in dtype:
+        for avg_fac, var in zip(self.avg_facs, self.vars):
+            if "int" in var.type.dtype:
                 avg_fac.set_value(1)  # int types do not support averaging.
             else:
                 avg_fac.set_value(1 / n_gpu)
@@ -301,8 +144,50 @@ class Shareds(SynkVariables):
                     self.avg_facs.append(fcn_shared)
                     break
                 else:
-                    raise RuntimeError("Could not identify shared var's \
-                        average factor.")
+                    raise RuntimeError("Could not identify shared var's "
+                        "averaging factor.")
+
+
+###############################################################################
+#                                                                             #
+#           Data Container for Inputs & Shareds (master & workers)            #
+#                                                                             #
+###############################################################################
+
+
+class BaseData(object):
+
+    _create = False
+
+    def __init__(self, ID, dtype, ndim):
+        super().__init__()
+        self._ID = ID
+        self._dtype = dtype
+        self._ndim = ndim
+        self._data = None
+        self._length = None
+        self._tag = 0
+        self._shmem = None
+
+    def _alloc_shmem(self, shape, tag):
+        tag = DATA_TAG + str(self._ID) + "_" + str(tag)
+        self._data, self._shmem = \
+            NpShmemArray(self.dtype, shape, tag, self._create, True)
+        self._alloc_size = self._data.size
+        self.data = self._data
+
+    def _reshape_shmem(self, shape):
+        np_arr = np.ctypeslib.as_array(self._shmem)
+        self._data = np_arr[:int(np.prod(shape))].reshape(shape)
+        self._length = len(self._data)
+        self.data = self._data
+
+    def _free_shmem(self):
+        self._data = None
+        self.data = None
+        self._shmem = None
+        self._length = 0
+        self._alloc_size = 0
 
 
 ###############################################################################
@@ -318,49 +203,45 @@ class Outputs(struct):
         super().__init__(**kwargs)
         self.vars = list()
         self.gpu_vars = list()
-        self.dtypes = list()
         self.to_cpu = list()
         self.avg_funcs = list()
         self.avg_facs = list()
-        self.num = 0
 
-    def include(self, var):
+    def register(self, var):
         if var in self.vars:  # (already have this var, just retrieve it)
             output_ID = self.vars.index(var)
         else:
             from theano.gpuarray.type import GpuArrayVariable
-            output_ID = self.num
+            output_ID = len(self.vars)
             self.vars.append(var)
             to_cpu = False if isinstance(var, GpuArrayVariable) else True
             self.to_cpu.append(to_cpu)
             gpu_var = var.transfer(None)
             self.gpu_vars.append(gpu_var)
-            self.dtypes.append(var.type.dtype)
             avg_fac = theano.shared(np.array(1, dtype=var.type.dtype))
             avg_otpt = (avg_fac * gpu_var).transfer(None)
             avg_func = theano.function([gpu_var], avg_otpt)
             self.avg_facs.append(avg_fac)
             self.avg_funcs.append(avg_func)
-            self.num += 1
         return output_ID
 
-    def register(self, outputs):
+    def register_set(self, outputs):
         if outputs is None:
             return [], []
         else:
             gpu_outputs = list()
             output_IDs = list()
             if not isinstance(outputs, (list, tuple)):
-                outputs = [outputs]
+                outputs = (outputs,)
             for var in outputs:
-                output_ID = self.include(var)
+                output_ID = self.register(var)
                 output_IDs.append(output_ID)
                 gpu_outputs.append(self.gpu_vars[output_ID])
             return gpu_outputs, output_IDs
 
     def set_avg_facs(self, n_gpu):
-        for avg_fac, dtype in zip(self.avg_facs, self.dtypes):
-            if "int" in dtype:
+        for avg_fac, var in zip(self.avg_facs, self.vars):
+            if "int" in var.type.dtype:
                 avg_fac.set_value(1)
             else:
                 avg_fac.set_value(1 / n_gpu)
@@ -373,62 +254,48 @@ class Outputs(struct):
 ###############################################################################
 
 
-class SynkFunction(object):
+class BaseFunction(object):
 
+    _create = False
     _n_gpu = None
 
-    def __init__(self,
-                 ID,
-                 theano_function,
-                 input_IDs,
-                 collect_modes,
-                 reduce_ops,
-                 ):
+    def __init__(self, ID, theano_function):
         self._ID = ID
-        self._theano_function = theano_function
-        self._input_IDs = input_IDs
-        self._collect_modes = collect_modes
-        self._reduce_ops = reduce_ops
-        self._n_outputs = len(collect_modes)
+        self._f = theano_function
+        self._n_input = len(self._f.inv_finder) - len(self._f.get_shared())
+        self._n_output = len(self._f.outputs)
+        self._build_sync()
 
     def _build_sync(self):
         tag_ID = str(self._ID)
-        if self._n_outputs == 0:
+        if self._n_output == 0:
             output_subset = []
+            collect_modes = []
+            reduce_ops = []
         else:
             output_subset = ShmemRawArray(
-                c_bool,
-                [True] * self._n_outputs,
-                OTPT_SBST_TAG + tag_ID,
-                self._create,
-            )
+                c_bool, [True] * self._n_output, OTPT_SBST_TAG + tag_ID, self._create)
+            collect_modes = NpShmemArray(
+                'uint8', self._n_output, CLCT_MD_TAG + tag_ID, self._create)
+            reduce_ops = NpShmemArray(
+                'uint8', self._n_output, RDC_OP_TAG + tag_ID, self._create)
+        if self._n_input == 0:
+            data_IDs = []
+        else:
+            data_IDs = NpShmemArray(
+                'uint32', self._n_input, IN_DATA_ID_TAG + tag_ID, self._create)
         self._sync = struct(
             output_subset=output_subset,
+            collect_modes=collect_modes,
+            reduce_ops=reduce_ops,
+            data_IDs=data_IDs,
         )
 
-    @property
-    def theano_function(self):
-        """ Read-only: returns the underlying Theano function. """
-        return self._theano_function
-
-    @property
-    def inputs_scatter(self):
-        """ Read-only: lists whether inputs are scattered (`0-th` dimension);
-        otherwise broadcast. """
-        return self._inputs_scatter
-
-    @property
-    def collect_modes(self):
-        """ Read-only: lists the output collection modes. """
-        return self._collect_modes
-
-    @property
-    def reduce_ops(self):
-        """ Read-only: lists the output reduce operations. """
-        return self._reduce_ops
-
-    def _call_theano_function(self, inputs, output_subset=None):
-        results = self._theano_function(*inputs, output_subset=output_subset)
-        if not isinstance(results, list):
-            results = [results]
-        return results  # (always returns a list, even if length 1)
+    def _get_my_inputs(self, sync_scat, g_synk_datas):
+        if self._n_input == 0:
+            return ()
+        my_idxs = get_my_scat_idxs(sync_scat, self._rank)
+        my_inputs = list()
+        for data_ID in self._sync.data_IDs:
+            my_inputs.append(g_synk_datas[data_ID].data[my_idxs])
+        return tuple(my_inputs)

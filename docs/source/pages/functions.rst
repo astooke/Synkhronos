@@ -3,8 +3,11 @@ Function Reference
 ==================
 
 .. automodule:: synkhronos
-   :members: fork, distribute, close, function, get_shmems, set_shmems, free_shmems, broadcast, gather, reduce, all_reduce, all_gather, scatter, make_slices
+   :members: fork, distribute, close, function, data, broadcast, gather, reduce, all_reduce, all_gather, scatter, make_slices
 
 .. autoclass:: synkhronos.master.Function
    :special-members:
-   :members: get_input_shmems, set_input_shmems, as_theano, __call__, theano_function, collect_modes, reduce_ops, output_to_cpu, name
+   :members: as_theano, __call__, build_inputs, theano_function, collect_modes, reduce_ops, output_to_cpu, name
+
+.. autoclass:: synkhronos.master.SynkData
+   :members: set_value, get_value, set_length, check_input_type, free_memory, dtype, ndim, length, alloc_size
