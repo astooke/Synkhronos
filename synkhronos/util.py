@@ -84,6 +84,7 @@ def build_sync(n_gpu):
         ndim=mp.RawValue('i', 0),
         shape=np.ctypeslib.as_array(mp.RawArray('i', 10)),  # (ndim <= 10)
         tag=mp.RawValue('i', 0),
+        scatter=mp.RawValue(ctypes.c_bool, True),
     )
     scat = struct(
         assign_idxs=np.ctypeslib.as_array(mp.RawArray('i', n_gpu + 1)),
@@ -121,10 +122,10 @@ def _build_collect_reduce(n_outputs, args, check_list, name):
             raise ValueError("Number of ", name, " args does not match number "
                 "of outputs (or enter a single string to be used for all "
                 "outputs).  None is a valid entry.")
-        arg_IDs = tuple([check_list.index(arg) for arg in args])
+        arg_IDs = [check_list.index(arg) for arg in args]
     else:
-        arg_ID = check_list.index(arg)
-        arg_IDs = (arg_ID,) * n_outputs
+        arg_ID = check_list.index(args)
+        arg_IDs = [arg_ID] * n_outputs
     return arg_IDs
 
 
@@ -157,7 +158,7 @@ def build_collect(outputs, collect_modes, reduce_ops):
     return collect_IDs, reduce_IDs
 
 
-def check_ouput_subset(n_outputs, output_subset):
+def check_output_subset(n_outputs, output_subset):
     if not isinstance(output_subset, list):
         raise TypeError("Optional param 'output_subset' must be a "
             "list of ints.")

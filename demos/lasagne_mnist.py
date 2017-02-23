@@ -225,11 +225,11 @@ def iterate_minibatches(inputs, targets, batchsize, shuffle=False):
         yield inputs[excerpt], targets[excerpt]
 
 
-def iterate_minibatch_indices(dataslice, batchsize, shuffle=False):
+def iterate_minibatch_indices(data_len, batchsize, shuffle=False):
     if shuffle:
-        indices = np.arange(dataslice.start, dataslice.stop)
+        indices = np.arange(data_len)
         np.random.shuffle(indices)
-    for start_idx in range(dataslice.start, dataslice.stop - batchsize + 1, batchsize):
+    for start_idx in range(0, data_len - batchsize + 1, batchsize):
         if shuffle:
             batch = indices[start_idx:start_idx + batchsize]
         else:
@@ -307,10 +307,9 @@ def main(model='mlp', num_epochs=500):
     synk.distribute()
 
     # Write data into input shared memory (also applies to val_fn--same vars).
-    train_fn.set_input_shmems(np.concatenate([X_train, X_val, X_test]),
-                              np.concatenate([y_train, y_val, y_test]))
-    # And record which entries are each kind, for easy reference.
-    train_set, val_set, test_set = synk.make_slices([y_train, y_val, y_test])
+    X_train_synk, y_train_synk = train_fn.build_inputs(X_train, y_train)
+    X_val_synk, y_val_synk = train_fn.build_inputs(X_val, y_val)
+    X_test_synk, y_test_synk = train_fn.build_inputs(X_test, y_test)
 
     # Finally, launch the training loop.
     print("Starting training...")
@@ -320,8 +319,8 @@ def main(model='mlp', num_epochs=500):
         train_err = 0
         train_batches = 0
         start_time = time.time()
-        for batch in iterate_minibatch_indices(train_set, 500, shuffle=True):
-            train_err += train_fn(batch=batch)
+        for batch in iterate_minibatch_indices(len(y_train), 500, shuffle=True):
+            train_err += train_fn(X_train_synk, y_train_synk, batch=batch)
             synk.all_reduce(params)
             train_batches += 1
         mid_time = time.time()
@@ -330,8 +329,8 @@ def main(model='mlp', num_epochs=500):
         val_err = 0
         val_acc = 0
         val_batches = 0
-        for batch in iterate_minibatch_indices(val_set, 500, shuffle=False):
-            err, acc = val_fn(batch=batch)
+        for batch in iterate_minibatch_indices(len(y_val), 500, shuffle=False):
+            err, acc = val_fn(X_val_synk, y_val_synk, batch=batch)
             val_err += err
             val_acc += acc
             val_batches += 1
@@ -354,8 +353,8 @@ def main(model='mlp', num_epochs=500):
     test_err = 0
     test_acc = 0
     test_batches = 0
-    for batch in iterate_minibatch_indices(test_set, 500, shuffle=False):
-        err, acc = val_fn(batch=batch)
+    for batch in iterate_minibatch_indices(len(y_test), 500, shuffle=False):
+        err, acc = val_fn(X_test_synk, y_test_synk, batch=batch)
         test_err += err
         test_acc += acc
         test_batches += 1

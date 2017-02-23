@@ -37,9 +37,8 @@ RDC_OP_TAG = PRE + "_reduce_ops_"
 IN_DATA_ID_TAG = PRE + "_in_data_ids_"
 
 # Datas
-DATA_TDN_TAG = "_data_tdn_"
-DATA_SHAPE_TAG = "_data_shape_"
-DATA_TAG = "_synk_data_"
+DATA_SHAPE_TAG = PRE + "_data_shape_"
+DATA_TAG = PRE + "_data_"
 
 AVG_FAC_NAME = "__synk_avg_fac__"
 
@@ -113,7 +112,7 @@ class Shareds(Inputs):
         self.avg_facs = list()
         self.avg_funcs = list()
 
-    def get_gpu_array(self, idx):
+    def get_gpuarray(self, idx):
         """ Re-reference the variable in case GPU allocation has changed. """
         return self.vars[idx].container.data
 
@@ -127,7 +126,6 @@ class Shareds(Inputs):
                 avg_func = theano.function([], updates={var: var * avg_fac})
                 self.avg_facs.append(avg_fac)
                 self.avg_funcs.append(avg_func)
-            self.synk_datas.append(None)
 
     def set_avg_facs(self, n_gpu):
         for avg_fac, var in zip(self.avg_facs, self.vars):
@@ -159,20 +157,23 @@ class BaseData(object):
 
     _create = False
 
-    def __init__(self, ID, dtype, ndim):
+    def __init__(self, ID, dtype, ndim, scatter=True):
         super().__init__()
         self._ID = ID
         self._dtype = dtype
         self._ndim = ndim
         self._data = None
+        self.data = None
         self._length = None
         self._tag = 0
         self._shmem = None
+        self._alloc_size = 0
+        self._scatter = scatter
 
     def _alloc_shmem(self, shape, tag):
         tag = DATA_TAG + str(self._ID) + "_" + str(tag)
         self._data, self._shmem = \
-            NpShmemArray(self.dtype, shape, tag, self._create, True)
+            NpShmemArray(self._dtype, shape, tag, self._create, True)
         self._alloc_size = self._data.size
         self.data = self._data
 
@@ -258,6 +259,7 @@ class BaseFunction(object):
 
     _create = False
     _n_gpu = None
+    _rank = None
 
     def __init__(self, ID, theano_function):
         self._ID = ID
@@ -297,5 +299,9 @@ class BaseFunction(object):
         my_idxs = get_my_scat_idxs(sync_scat, self._rank)
         my_inputs = list()
         for data_ID in self._sync.data_IDs:
-            my_inputs.append(g_synk_datas[data_ID].data[my_idxs])
+            synk_data = g_synk_datas[data_ID]
+            if synk_data._scatter:
+                my_inputs.append(synk_data.data[my_idxs])
+            else:
+                my_inputs.append(synk_data.data)
         return tuple(my_inputs)

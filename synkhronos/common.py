@@ -4,7 +4,7 @@ Constants and utilities used in across master and workers.
 """
 
 import os
-from shmemarray import NpShmemArray
+from .shmemarray import NpShmemArray
 
 
 PID = str(os.getpid())
@@ -42,6 +42,7 @@ PKL_FILE = "synk_f_dump_" + PID + ".pkl"
 
 # Function Outputs
 COLLECT_MODES = ["reduce", "gather", None]  # NOTE: matches GPU_COMM IDs
+NO_COLLECT = 2
 REDUCE_OPS = ["avg", "sum", "prod", "min", "max", None]  # (disallow others)
 REDUCE_AVG = 0
 REDUCE_NO_OP = 7
