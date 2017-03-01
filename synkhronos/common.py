@@ -4,15 +4,16 @@ Constants and utilities used in across master and workers.
 """
 
 import os
-from .shmemarray import NpShmemArray
+
+import inspect
+import synkhronos
+PKL_PATH = inspect.getfile(synkhronos).rsplit("__init__.py")[0] + "pkl/"
 
 
 PID = str(os.getpid())
 
 PRE = "/synk_" + PID
-SCAT_IDXS_TAG = PRE + "_scat_idxs_"
-SHRD_IDS_TAG = PRE + "_shared_ids_"
-DATA_IDS_TAG = PRE + "_data_ids_"
+
 
 # Exec types
 FUNCTION = 0
@@ -37,8 +38,7 @@ ALL_GATHER = 4
 SCATTER = 0
 
 # Where to put functions on their way to workers
-# (possibly need to make this secure somehow?)
-PKL_FILE = "synk_f_dump_" + PID + ".pkl"
+PKL_FILE = PKL_PATH + "synk_f_dump_" + PID + ".pkl"
 
 # Function Outputs
 COLLECT_MODES = ["reduce", "gather", None]  # NOTE: matches GPU_COMM IDs
@@ -100,21 +100,3 @@ def use_gpu(rank, n_gpu, sync, is_master=True):
         return False  # (someone else failed)
     else:
         return gpu_comm  # (success)
-
-
-def _alloc_scat_idxs(size, tag, create):
-    tag = SCAT_IDXS_TAG + str(tag)
-    return NpShmemArray('int32', size, tag, create)
-
-
-def alloc_shared_IDs(size, create):
-    shared_IDs = NpShmemArray('uint32', size, SHRD_IDS_TAG, create)
-    data_IDs = NpShmemArray('uint32', size, DATA_IDS_TAG, create)
-    return shared_IDs, data_IDs
-
-
-def get_my_scat_idxs(sync_scat, rank):
-    my_idxs = slice(*sync_scat.assign_idxs[rank:rank + 2])
-    if sync_scat.use_idxs_arr.value:
-        my_idxs = sync_scat.idxs_arr[my_idxs]
-    return my_idxs

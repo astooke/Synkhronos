@@ -7,11 +7,9 @@ SynkFunction is base class for master and worker Function classes.
 """
 
 import numpy as np
-import theano
-from ctypes import c_bool
 
-from .common import PID, get_my_scat_idxs
-from .shmemarray import NpShmemArray, ShmemRawArray
+from .common import PRE, REDUCE, GATHER, NO_COLLECT, REDUCE_AVG, REDUCE_OPS_WORKER
+from .shmemarray import NpShmemArray, ShmemRawArray, NP_TO_C_TYPE
 
 
 class struct(dict):
@@ -23,74 +21,49 @@ class struct(dict):
 
 ###############################################################################
 #                                                                             #
-#              Inputs and  Shareds Registries   (master & workers)            #
+#              Theano Shared Variables Registry   (master & workers)          #
 #                                                                             #
 ###############################################################################
 
 
-PRE = "/synk_" + PID
+class Shareds(struct):
 
-# Functions
-OTPT_SBST_TAG = PRE + "_output_subset_"
-CLCT_MD_TAG = PRE + "_collect_modes_"
-RDC_OP_TAG = PRE + "_reduce_ops_"
-IN_DATA_ID_TAG = PRE + "_in_data_ids_"
-
-# Datas
-DATA_SHAPE_TAG = PRE + "_data_shape_"
-DATA_TAG = PRE + "_data_"
-
-AVG_FAC_NAME = "__synk_avg_fac__"
-
-
-###############################################################################
-#                          Inputs Registry                                    #
-
-class Inputs(struct):
-
-    implicit = False
-
-    def __init__(self):
+    def __init__(self, n_gpu=None):
         super().__init__()
         self.vars = list()
         self.names = list()
+        self.avg_funcs = list()
+        self.inv_n_gpu = None if n_gpu is None else 1 / n_gpu
 
-    def register_func(self, f):
-        var_IDs = list()
-        n_vars = len(f.inv_finder)
-        for theano_In in [f.inv_finder[f.finder[i]] for i in range(n_vars)]:
-            if self.implicit == theano_In.implicit:
-                var_IDs.append(self.register(theano_In.variable))
-        return tuple(var_IDs)
+    def register_func(self, f, accumulators):
+        for var in f.get_shared():
+            self.register(var, accumulators)
 
-    def register(self, variable):
-        if variable in self.vars:
-            var_ID = self.vars.index(variable)
-        else:
-            var_ID = len(self.vars)
-            self.vars.append(variable)
-            self.names.append(variable.name)
-        return var_ID
-
-    def is_member(self, var_or_name):
-        member = False
-        if var_or_name in self.vars:
-            member = True
-        elif var_or_name is not None and var_or_name in self.names:
-            member = True
-        return member
+    def register(self, var, accumulators):
+        if var not in self.vars:
+            self.vars.append(var)
+            self.names.append(var.name)  # (could be None)
+            if "int" in var.dtype:
+                self.avg_funcs.append(None)
+            else:
+                avg_func = \
+                    accumulators.get_function("avg_shared", var.dtype, var.ndim)
+                s_var = avg_func.get_shared()[0]
+                self.avg_funcs.append(avg_func.copy(swap={s_var: var}))
 
     def get_ID(self, var_or_name):
-        if var_or_name in self.vars:
+        if var_or_name is None:
+            raise TypeError("Cannot find using NoneType.")
+        try:
             return self.vars.index(var_or_name)
-        elif var_or_name is not None and var_or_name in self.names:
+        except ValueError:
+            pass
+        try:
             return self.names.index(var_or_name)
-        else:
-            raise ValueError("Unrecognized variable or name: ", var_or_name)
+        except ValueError as exc:
+            raise exc("Unrecognized shared var or name: ", var_or_name)
 
     def get_IDs(self, vars_or_names):
-        if not isinstance(vars_or_names, (list, tuple)):
-            vars_or_names = (vars_or_names,)
         var_IDs = list()
         for var in vars_or_names:
             var_IDs.append(self.get_ID(var))
@@ -98,52 +71,89 @@ class Inputs(struct):
             raise ValueError("Redundant variables provided.")
         return tuple(var_IDs)
 
+    def get_var(self, var_or_name):
+        if var_or_name is None:
+            raise TypeError("Cannot find using NoneType.")
+        if var_or_name in self.vars:
+            return var_or_name
+        else:
+            try:
+                return self.vars[self.names.index(var_or_name)]
+            except ValueError as exc:
+                raise exc("Unrecognized shared var or name: ", var_or_name)
 
-###############################################################################
-#                           Shared Variables Registry                         #
+    def get_vars(self, vars_or_names):
+        varbs = list()
+        for var in vars_or_names:
+            varbs.append(self.get_var(var))
+        if len(set(varbs)) != len(varbs):
+            raise ValueError("Redundant variables provided.")
+        return tuple(varbs)
 
-class Shareds(Inputs):
-
-    implicit = True
-
-    def __init__(self, make_avg):
-        super().__init__()
-        self.make_avg = make_avg
-        self.avg_facs = list()
-        self.avg_funcs = list()
+    def get_vars_from_IDs(self, IDs):
+        return [self.vars[i] for i in IDs]
 
     def get_gpuarray(self, idx):
         """ Re-reference the variable in case GPU allocation has changed. """
         return self.vars[idx].container.data
 
-    def register(self, var):
-        old_n = len(self.vars)
-        var_ID = super().register(var)
-        if len(self.vars) > old_n:
-            if self.make_avg:  # (shareds in master only)
-                dtype = self.vars[var_ID].type.dtype
-                avg_fac = theano.shared(np.array(1, dtype=dtype), name=AVG_FAC_NAME)
-                avg_func = theano.function([], updates={var: var * avg_fac})
-                self.avg_facs.append(avg_fac)
-                self.avg_funcs.append(avg_func)
+    def set_n_gpu(self, n_gpu):
+        self.inv_n_gpu = 1 / n_gpu
 
-    def set_avg_facs(self, n_gpu):
-        for avg_fac, var in zip(self.avg_facs, self.vars):
-            if "int" in var.type.dtype:
-                avg_fac.set_value(1)  # int types do not support averaging.
-            else:
-                avg_fac.set_value(1 / n_gpu)
+    def call_avg_funcs(self, var_IDs, avg_fac=None):
+        avg_fac = self.inv_n_gpu if avg_fac is None else avg_fac
+        for var_ID in var_IDs:
+            self.avg_funcs[var_ID](avg_fac)
 
-    def unpack_avg_facs(self):
-        """ Worker only (and only if later changing avg_fac dynamically) """
-        for fcn in self.avg_functions:
-            for fcn_shared in fcn.get_shared():
-                if fcn_shared.name == AVG_FAC_NAME:
-                    self.avg_facs.append(fcn_shared)
-                    break
-                else:
-                    raise RuntimeError("Could not identify shared var's "
-                        "averaging factor.")
+
+###############################################################################
+#                                                                             #
+#                     Outputs Registry (master only)                          #
+#                                                                             #
+###############################################################################
+
+
+class Output(struct):
+
+    def __init__(self, gpu_var, to_cpu, avg_f):
+        super().__init__()
+        self.gpu_var = gpu_var
+        self.to_cpu = to_cpu
+        self.avg_f = avg_f
+
+
+class Outputs(struct):
+    """ Needed to provide same GpuArrayVariable for same output variable. """
+
+    def __init__(self):
+        super().__init__()
+        self.outputs = dict()
+
+    def register(self, accumulators, var):
+        if var in self.outputs:  # (var is dict key)
+            output = self.outputs[var]
+        else:
+            from theano.gpuarray.type import GpuArrayVariable
+            gpu_var = var.transfer(None)
+            to_cpu = not isinstance(var, GpuArrayVariable)
+            avg_f = accumulators.get_function("avg", var.dtype, var.ndim)
+            output = Output(gpu_var, to_cpu, avg_f)
+            self.outputs[var] = output
+        return output
+
+    def register_set(self, accumulators, outputs):
+        if outputs is None:
+            return [], []
+        else:
+            synk_outputs = list()
+            gpu_outputs = list()
+            if not isinstance(outputs, (list, tuple)):
+                outputs = (outputs,)
+            for var in outputs:
+                synk_output = self.register(accumulators, var)
+                synk_outputs.append(synk_output)
+                gpu_outputs.append(synk_output.gpu_var)
+            return synk_outputs, gpu_outputs
 
 
 ###############################################################################
@@ -157,95 +167,78 @@ class BaseData(object):
 
     _create = False
 
-    def __init__(self, ID, dtype, ndim, scatter=True):
-        super().__init__()
-        self._ID = ID
+    def __init__(self, dtype, ndim, scatter=True):
         self._dtype = dtype
+        self._ctype = NP_TO_C_TYPE.get(dtype, None)
+        if self._ctype is None:
+            raise TypeError("Unsupported numpy dtype: ", dtype)
         self._ndim = ndim
         self._data = None
         self.data = None
-        self._length = None
         self._tag = 0
         self._shmem = None
         self._alloc_size = 0
-        self._scatter = scatter
+        self._scatter = scatter  # Currently, fixed at instantiation.
+        self._ID = None  # (assigned by scatterer)
 
-    def _alloc_shmem(self, shape, tag):
-        tag = DATA_TAG + str(self._ID) + "_" + str(tag)
-        self._data, self._shmem = \
-            NpShmemArray(self._dtype, shape, tag, self._create, True)
-        self._alloc_size = self._data.size
-        self.data = self._data
+    def _alloc_shmem(self, size, tag):
+        tag = PRE + "_data_" + str(self._ID) + "_" + str(tag)
+        self._shmem = ShmemRawArray(self._ctype, size, tag, self._create)
+        self._alloc_size = size
 
-    def _reshape_shmem(self, shape):
+    def _shape_data(self, shape):
         np_arr = np.ctypeslib.as_array(self._shmem)
         self._data = np_arr[:int(np.prod(shape))].reshape(shape)
-        self._length = len(self._data)
         self.data = self._data
 
     def _free_shmem(self):
         self._data = None
         self.data = None
         self._shmem = None
-        self._length = 0
         self._alloc_size = 0
 
 
 ###############################################################################
 #                                                                             #
-#                            Outputs (master only)                            #
+#                     Base Scatterer (master & workers)                       #
 #                                                                             #
 ###############################################################################
 
 
-class Outputs(struct):
+class BaseScatterer(object):
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.vars = list()
-        self.gpu_vars = list()
-        self.to_cpu = list()
-        self.avg_funcs = list()
-        self.avg_facs = list()
+    create = False
 
-    def register(self, var):
-        if var in self.vars:  # (already have this var, just retrieve it)
-            output_ID = self.vars.index(var)
-        else:
-            from theano.gpuarray.type import GpuArrayVariable
-            output_ID = len(self.vars)
-            self.vars.append(var)
-            to_cpu = False if isinstance(var, GpuArrayVariable) else True
-            self.to_cpu.append(to_cpu)
-            gpu_var = var.transfer(None)
-            self.gpu_vars.append(gpu_var)
-            avg_fac = theano.shared(np.array(1, dtype=var.type.dtype))
-            avg_otpt = (avg_fac * gpu_var).transfer(None)
-            avg_func = theano.function([gpu_var], avg_otpt)
-            self.avg_facs.append(avg_fac)
-            self.avg_funcs.append(avg_func)
-        return output_ID
+    def __init__(self, n_gpu, rank):
+        self.n_gpu = n_gpu
+        self.rank = rank
+        self.synk_datas = list()
 
-    def register_set(self, outputs):
-        if outputs is None:
-            return [], []
-        else:
-            gpu_outputs = list()
-            output_IDs = list()
-            if not isinstance(outputs, (list, tuple)):
-                outputs = (outputs,)
-            for var in outputs:
-                output_ID = self.register(var)
-                output_IDs.append(output_ID)
-                gpu_outputs.append(self.gpu_vars[output_ID])
-            return gpu_outputs, output_IDs
+    def append(self, synk_data):
+        synk_data._ID = len(self.synk_datas)
+        self.synk_datas.append(synk_data)
 
-    def set_avg_facs(self, n_gpu):
-        for avg_fac, var in zip(self.avg_facs, self.vars):
-            if "int" in var.type.dtype:
-                avg_fac.set_value(1)
+    def get_my_inputs(self, n_inputs):
+        if n_inputs == 0:
+            return (), ()
+        my_idxs = slice(*self.sync.assign_idxs[self.rank:self.rank + 2])
+        if self.sync.use_idxs_arr.value:
+            my_idxs = self.sync.idxs_arr[my_idxs]
+        my_inputs = list()
+        scatter = list()
+        for data_ID in self.sync.data_IDs[:n_inputs]:
+            synk_data = self.synk_datas[data_ID]
+            if synk_data._scatter:
+                my_inputs.append(synk_data._data[my_idxs])
+                scatter.append(True)
             else:
-                avg_fac.set_value(1 / n_gpu)
+                my_inputs.append(synk_data._data)
+                scatter.append(False)
+        return tuple(my_inputs), tuple(scatter)
+
+    def _alloc_idxs_arr(self, size, tag):
+        tag = PRE + "_scat_idxs_" + str(tag)
+        self.sync.idxs_arr = NpShmemArray('int64', size, tag, self.create)
 
 
 ###############################################################################
@@ -264,44 +257,73 @@ class BaseFunction(object):
     def __init__(self, ID, theano_function):
         self._ID = ID
         self._f = theano_function
-        self._n_input = len(self._f.inv_finder) - len(self._f.get_shared())
+        self._n_input = len([i for i in self._f.maker.inputs if not i.implicit])
         self._n_output = len(self._f.outputs)
-        self._build_sync()
+        self._output_set = -1  # (invalid value)
+        self._collects = -1
+        self._ops = -1
 
-    def _build_sync(self):
-        tag_ID = str(self._ID)
-        if self._n_output == 0:
-            output_subset = []
-            collect_modes = []
-            reduce_ops = []
-        else:
-            output_subset = ShmemRawArray(
-                c_bool, [True] * self._n_output, OTPT_SBST_TAG + tag_ID, self._create)
-            collect_modes = NpShmemArray(
-                'uint8', self._n_output, CLCT_MD_TAG + tag_ID, self._create)
-            reduce_ops = NpShmemArray(
-                'uint8', self._n_output, RDC_OP_TAG + tag_ID, self._create)
-        if self._n_input == 0:
-            data_IDs = []
-        else:
-            data_IDs = NpShmemArray(
-                'uint32', self._n_input, IN_DATA_ID_TAG + tag_ID, self._create)
-        self._sync = struct(
-            output_subset=output_subset,
-            collect_modes=collect_modes,
-            reduce_ops=reduce_ops,
-            data_IDs=data_IDs,
-        )
-
-    def _get_my_inputs(self, sync_scat, g_synk_datas):
-        if self._n_input == 0:
-            return ()
-        my_idxs = get_my_scat_idxs(sync_scat, self._rank)
-        my_inputs = list()
-        for data_ID in self._sync.data_IDs:
-            synk_data = g_synk_datas[data_ID]
-            if synk_data._scatter:
-                my_inputs.append(synk_data.data[my_idxs])
+    def _set_accum_fs(self, accumulators):
+        """ before barrier in master, after barrier in workers """
+        self._accum_fs = list()
+        for idx, mode_ID, op_ID in zip(self._output_set, self._collects_, self._ops):
+            dtype = self._f.outputs[idx].variable.dtype
+            ndim = self._f.outputs[idx].variable.ndim
+            if mode_ID == REDUCE:
+                op = REDUCE_OPS_WORKER[op_ID]
+                self._accum_fs.append(accumulators.get_function(
+                    "reduce", dtype, ndim, op))
+            elif mode_ID == GATHER:
+                self._accum_fs.append(accumulators.get_function(
+                    "gather", dtype, ndim))
+            elif mode_ID == NO_COLLECT:
+                self._accum_fs.append(lambda x, y: y)
             else:
-                my_inputs.append(synk_data.data)
-        return tuple(my_inputs)
+                raise RuntimeError("Unrecognized collect mode:", mode_ID)
+
+    def _sliced_f(self, my_inputs, scatter, num_slices, output_subset):
+        # assume num_slices > 1 and any(scatter) == True
+        accum_rs = None
+        for sliced_inputs in slice_inputs(my_inputs, scatter, num_slices):
+            sliced_rs = self._f(*sliced_inputs, output_subset=output_subset)
+            accum_rs = self._accum_my_results(accum_rs, sliced_rs)
+        self._avg_my_results(accum_rs, num_slices)
+        return accum_rs  # (always a list, even if length 1)
+
+    def _accum_my_results(self, accum_rs, sliced_rs):
+        if accum_rs is None:
+            return sliced_rs
+        if not isinstance(accum_rs, (list, tuple)):
+            accum_rs = [accum_rs]
+        if not isinstance(sliced_rs, (list, tuple)):
+            sliced_rs = (sliced_rs,)
+        for idx, (accum_r, sliced_r, accum_f) in \
+                enumerate(zip(accum_rs, sliced_rs, self._accum_fs)):
+            accum_rs[idx] = accum_f(accum_r, sliced_r)
+        return accum_rs
+
+    def _avg_my_results(self, accum_rs, num_slices):
+        inv_num = 1 / num_slices
+        for i_r, (i_o, accum_r, mode_ID, op_ID) in enumerate(
+                zip(self._output_set, accum_rs, self._collects, self._ops)):
+            if mode_ID == REDUCE:
+                if op_ID == REDUCE_AVG:
+                    accum_rs[i_r] = self._output.avg_fs[i_o](accum_r, inv_num)
+        return accum_rs
+
+
+def slice_inputs(inputs, scatter, num_slices):
+    scat_idx = scatter.index(True)
+    length = len(inputs[scat_idx])  # (all scattered are same length)
+    edges = np.linspace(0, length, num_slices + 1, dtype='int64')
+    slices = list()
+    for idx in range(num_slices):
+        slices.append(slice(*edges[idx:idx + 2]))
+    for _slice in slices:
+        sliced_inputs = list()
+        for inpt, scat in zip(inputs, scatter):
+            if scat:
+                sliced_inputs.append(inpt[_slice])
+            else:
+                sliced_inputs.append(inpt)
+        yield tuple(sliced_inputs)

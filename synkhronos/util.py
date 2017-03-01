@@ -5,7 +5,7 @@ Classes and functions used by master but which don't MODIFY globals.
 
 import numpy as np
 import multiprocessing as mp
-import ctypes
+from ctypes import c_bool
 
 from .common import REDUCE, COLLECT_MODES, REDUCE_OPS, REDUCE_NO_OP
 from .variables import struct, BaseData
@@ -49,7 +49,7 @@ def get_n_gpu(n_gpu, master_rank):
     return n_gpu, master_rank
 
 
-def build_sync(n_gpu):
+def build_sync(n_gpu, n_in_out, n_shared):
 
     mgr = mp.Manager()
     dictionary = mgr.dict()
@@ -61,46 +61,58 @@ def build_sync(n_gpu):
     )
     init = struct(
         dict=dictionary,
-        n_user_fcns=mp.RawValue('i', 0),
-        distributed=mp.RawValue(ctypes.c_bool, False),
+        distributed=mp.RawValue(c_bool, False),
         barriers=barriers,
     )
-    execute = struct(
-        quit=mp.RawValue(ctypes.c_bool, False),
+    exct = struct(
+        quit=mp.RawValue(c_bool, False),
         ID=mp.RawValue('i', 0),
+        sub_ID=mp.RawValue('i', 0),
         barrier_in=mp.Barrier(n_gpu),
         barrier_out=mp.Barrier(n_gpu),
-        workers_OK=mp.Value(ctypes.c_bool, True)
+        workers_OK=mp.Value(c_bool, True)  # (not Raw)
     )
-    IDs = struct(
-        func=mp.RawValue('i', 0),
-        comm=mp.RawValue('i', 0),
+    comm = struct(
         op=mp.RawValue('i', 0),
-        data=mp.RawValue('i', 0),
         n_shared=mp.RawValue('i', 0),
-        vars=None,  # (allocated later)
-        datas=None,
-        dtype=mp.RawValue('i', 0),
-        ndim=mp.RawValue('i', 0),
-        shape=np.ctypeslib.as_array(mp.RawArray('i', 10)),  # (ndim <= 10)
-        tag=mp.RawValue('i', 0),
-        scatter=mp.RawValue(ctypes.c_bool, True),
+        vars=mp.RawArray('I', n_shared),
+        datas=mp.RawArray('I', n_in_out),
     )
-    scat = struct(
-        assign_idxs=np.ctypeslib.as_array(mp.RawArray('i', n_gpu + 1)),
-        use_idxs_arr=mp.RawValue(ctypes.c_bool, False),
-        idxs_tag=mp.RawValue('i', 0),
-        idxs_size=mp.RawValue('i', 0),
-        idxs_arr=None,  # (allocated later)
+    data = struct(
+        ID=mp.RawValue('i', 0),
+        dtype=mp.RawValue('i', 0),  # (by ID)
+        ndim=mp.RawValue('i', 0),
+        shape=np.ctypeslib.as_array(mp.RawArray('l', 10)),  # (ndim <= 10)
+        tag=mp.RawValue('i', 0),
+        scatter=mp.RawValue(c_bool, True),
+        alloc_size=mp.RawValue('l', 0),
+    )
+    func = struct(
+        output_subset=mp.RawArray(c_bool, [True] * n_in_out),
+        collect_modes=mp.RawArray('B', n_in_out),
+        reduce_ops=mp.RawArray('B', n_in_out),
+        n_slices=mp.RawValue('i', 0),
     )
     sync = struct(
         init=init,
-        exct=execute,
-        IDs=IDs,
-        scat=scat,
+        exct=exct,
+        comm=comm,
+        data=data,
+        func=func,
     )
     return sync
 
+
+def build_sync_scat(n_gpu, n_in_out):
+    sync = struct(
+        assign_idxs=np.ctypeslib.as_array(mp.RawArray('l', n_gpu + 1)),
+        use_idxs_arr=mp.RawValue(c_bool, False),
+        tag=mp.RawValue('i', 0),
+        size=mp.RawValue('l', 0),
+        idxs_arr=None,  # (allocated later; only need if shuffling)
+        data_IDs=mp.RawArray('i', n_in_out),
+    )
+    return sync
 
 ###############################################################################
 #                           (function)                                        #
@@ -148,7 +160,8 @@ def check_collect_vs_op_IDs(collect_IDs, reduce_IDs):
     return reduce_IDs
 
 
-def build_collect(outputs, collect_modes, reduce_ops):
+def build_def_collect(outputs, collect_modes, reduce_ops):
+    """ For comms only: Function has its own method. """
     if outputs is None:
         return (), ()
     n_outputs = len(outputs) if isinstance(outputs, (list, tuple)) else 1
@@ -170,16 +183,16 @@ def check_output_subset(n_outputs, output_subset):
             raise ValueError("Output subset entry out of range: ", idx)
 
 
-def check_synk_inputs(synk_datas, dtypes, ndims):
-    for idx, (data, dtype, ndim) in enumerate(zip(synk_datas, dtypes, ndims)):
+def check_synk_inputs(synk_datas, vars):
+    for idx, (data, var) in enumerate(zip(synk_datas, vars)):
         if not isinstance(data, BaseData):
             raise ValueError("All function inputs must be of type SynkData.")
-        if data.dtype != dtype:
-            raise TypeError("Incorrect input dtype for position {}; "
-                "expected: {}, received: {}.".format(idx, dtype, data.dtype))
-        if data.ndim != ndim:
+        if data.dtype != var.dtype:
+            raise TypeError("Incorrect input dtype for position {}; expected: "
+                "{}, received: {}.".format(idx, var.dtype, data.dtype))
+        if data.ndim != var.ndim:
             raise TypeError("Incorrect input dimensions for position {}; "
-                "expected: {}, received: {}.".format(idx, ndim, data.ndim))
+                "expected: {}, received: {}.".format(idx, var.ndim, data.ndim))
         data._check_data()
 
 
@@ -187,48 +200,35 @@ def check_synk_inputs(synk_datas, dtypes, ndims):
 #                       Shared Memory Management                              #
 
 
-def oversize_shape(data, oversize):
-    """ Master only """
-    shape = data.shape
-    if oversize is not None:
-        if oversize < 1 or oversize > 2:
-            raise ValueError("Param 'oversize' must be in range 1 to 2"
-                " (direct multiplicative factor on 0-th index size).")
-        if shape:
-            shape = list(shape)
-            shape[0] = int(np.ceil(shape[0] * oversize))
-    return shape
-
-
 def build_scat_idxs(n_gpu, lengths, batch):
     if batch is not None:
         if isinstance(batch, int):  # (size from 0 is used)
             max_idx = batch
-            space_start = 0
-            space_end = batch
+            start = 0
+            end = batch
         elif isinstance(batch, slice):  # (slice is used)
             max_idx = batch.stop
-            space_start = batch.start
-            space_end = batch.stop
+            start = batch.start
+            end = batch.stop
         else:  # (explicit indices are used)
             max_idx = max(batch)
-            space_start = 0
-            space_end = len(batch)
+            start = 0
+            end = len(batch)
         if max_idx > min(lengths):
             raise ValueError("Requested index out of range of input lengths.")
     else:  # (i.e. no batch directive provided, use full array lengths)
-        space_start = 0
-        space_end = lengths[0]
-        if lengths.count(space_end) != len(lengths):  # (fast)
+        start = 0
+        end = lengths[0]
+        if lengths.count(end) != len(lengths):  # (fast)
             raise ValueError("If not providing param 'batch', all "
                 "inputs must be the same length.  Had lengths: ", lengths)
-    return np.linspace(space_start, space_end, n_gpu + 1, dtype=np.int32)
+    return np.linspace(start, end, n_gpu + 1, dtype=np.int64)
 
 
 def check_batch_types(batch):
     if batch is not None:
         if isinstance(batch, (list, tuple)):
-            batch = np.array(batch, dtype='int32')
+            batch = np.array(batch, dtype='int64')
         if isinstance(batch, np.ndarray):
             if batch.ndim > 1:
                 raise ValueError("Array for param 'batch' must be "
@@ -241,14 +241,13 @@ def check_batch_types(batch):
                 "or a list, tuple, or numpy array of integers.")
     return batch
 
-
 ###############################################################################
 #                           GPU Collectives                                   #
 
 
-def get_op_from_avg(op):
+def get_op_and_avg(op):
     _check_collect_reduce(op, REDUCE_OPS[:-1], "reduce operation")  # (disallow 'None')
-    op_ID = REDUCE_OPS.index(op)  # (worker can handle avg fine)
+    op_ID = REDUCE_OPS.index(op)
     if op == "avg":
         op = "sum"
         avg = True

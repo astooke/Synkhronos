@@ -10,83 +10,127 @@ import pickle
 from threading import BrokenBarrierError
 import atexit
 
-from .variables import Inputs, Shareds, BaseFunction, BaseData
-from .common import use_gpu, _alloc_scat_idxs, alloc_shared_IDs, get_my_scat_idxs
+from .variables import Shareds, BaseFunction, BaseData, BaseScatterer
+from .common import use_gpu
 from .common import (PKL_FILE, FUNCTION, GPU_COMM, BROADCAST, REDUCE, ALL_REDUCE,
                   ALL_GATHER, GATHER, CPU_COMM, SCATTER,
                   DATA_CREATE, DATA_ALLOC, DTYPES, NO_COLLECT,
                   REDUCE_OPS, REDUCE_OPS_WORKER, DATA, DATA_RESHAPE, DATA_FREE)
+from .accumulators import Accumulators
 
 
 CREATE = False
 
 
+###############################################################################
+#                                                                             #
+#                               Classes                                       #
+#                                                                             #
+###############################################################################
+
+
 class Function(BaseFunction):
 
     _create = CREATE
-    rank = None
     master_rank = None
 
-    def __call__(self, sync_scat, g_datas, gpu_comm):
+    def __call__(self, sync_func, scatterer, gpu_comm, accumulators):
         """
         1. Gather the right inputs from mp shared values.
         2. Execute local theano function on those inputs.
         3. Send results back to master.
         """
-        self.check_idxs_alloc(sync_scat)
-        my_inputs = self._get_my_inputs(sync_scat, g_datas)
-        output_subset, output_set = self.receive_output_subset()
-        my_results = self._f(*my_inputs, output_subset=output_subset)
-        self.collect_results(my_results, gpu_comm, output_set)
+        if self._n_input > 0:
+            scatterer.check_idxs_alloc()
+        my_inputs, scatter = scatterer.get_my_inputs(self._n_input)
+        output_subset, new_collect, num_slices = self.receive_f_info(sync_func)
+        if num_slices == 1 or not any(scatter):
+            my_results = self._f(*my_inputs, output_subset=output_subset)
+        else:
+            if new_collect:
+                self._set_accum_fs(accumulators)
+            my_results = \
+                self._sliced_f(my_inputs, scatter, num_slices, output_subset)
+        self.collect_results(my_results, gpu_comm)
 
-    def check_idxs_alloc(self, sync_scat):
-        if self._n_input == 0:
-            return
-        if sync_scat.use_idxs_arr.value:
-            if sync_scat.my_idxs_tag != sync_scat.idxs_tag.value:
-                alloc_scat_idxs(sync_scat)
-
-    def receive_output_subset(self):
+    def receive_f_info(self, sync_func):
         if self._n_output == 0:
-            return None, None
-        output_set = [i for i, x in enumerate(self._sync.output_subset) if x]
-        output_subset = None if all(output_set) else output_set
-        return output_subset, output_set
+            return None, False
+        output_set = list()
+        for i in range(self._n_output):
+            if sync_func.output_subset[i]:
+                output_set.append(i)
+        new_collect = any(output_set != self._output_set) or \
+            any(sync_func.collect_modes[output_set] != self._collects) or \
+            any(sync_func.reduce_ops[output_set] != self._ops)
+        if new_collect:
+            self._output_set = output_set
+            self._collects = sync_func.collect_modes[output_set]
+            self._ops = sync_func.reduce_ops[output_set]
+        output_subset = None if len(output_set) == self._n_output else output_set
+        return output_subset, new_collect, sync_func.n_slices.value
 
-    def collect_results(self, my_results, gpu_comm, output_set):
+    def collect_results(self, my_results, gpu_comm):
         if self._n_output == 0:
             return
         if not isinstance(my_results, (list, tuple)):
             my_results = (my_results,)
-        for idx, r in zip(output_set, my_results):
-            mode = self._sync.collect_modes[idx]
-            if mode == REDUCE:
-                op = REDUCE_OPS_WORKER[self._sync.reduce_ops[idx]]
+        for r, mode_ID, op_ID in zip(my_results, self._collects, self._ops):
+            if mode_ID == REDUCE:
+                op = REDUCE_OPS_WORKER[op_ID]
                 gpu_comm.reduce(r, op=op, root=self.master_rank)
-            elif mode == GATHER:
+            elif mode_ID == GATHER:
                 gpu_comm.all_gather(r)
-            elif mode != NO_COLLECT:
+            elif mode_ID != NO_COLLECT:
                 raise RuntimeError("Unrecognized collect mode in worker function.")
 
 
-def unpack_functions(theano_functions, n_fcn):
+class Scatterer(BaseScatterer):
+
+    create = False
+
+    def __init__(self, sync, *args):
+        super().__init__(*args)
+        self.sync = sync
+        self.tag = -1
+
+    def get_my_idxs(self):
+        self.check_idxs_alloc()
+        return super().get_my_idxs()
+
+    def check_idxs_alloc(self):
+        """ (lazy update) """
+        if self.sync.use_idxs_arr.value:
+            if self.tag != self.sync.tag.value:
+                size = self.sync.size.value
+                self.tag = self.sync.tag.value
+                self._alloc_idxs_arr(size, self.tag)
+
+    def get_data(self, data_ID):
+        return self.synk_datas[data_ID]
+
+
+###############################################################################
+#                                                                             #
+#                             Tasks                                           #
+#                                                                             #
+###############################################################################
+
+
+def unpack_functions(theano_functions, n_gpu):
     """
     Worker will recover variables in the same order as the master committed
     them, so they will have the same ID (index).
     """
     synk_functions = list()
-    g_inputs = Inputs()
-    g_shareds = Shareds(CREATE)
-    for idx, fcn in enumerate(theano_functions[:n_fcn]):
-        g_inputs.register_func(fcn)
+    g_shareds = Shareds(n_gpu)
+    for idx, fcn in enumerate(theano_functions):
         g_shareds.register_func(fcn)
         synk_functions.append(Function(ID=idx, theano_function=fcn))
-    g_shareds.avg_functions = theano_functions[n_fcn:]
-    # g_shareds.unpack_avg_facs()  # (only needed for changing avg_fac later)
-    return synk_functions, g_inputs, g_shareds
+    return synk_functions, g_shareds
 
 
-def receive_distribution(rank, n_gpu, sync_init, sync_IDs):
+def receive_distribution(rank, n_gpu, sync_init):
     sync_init.barriers.distribute.wait()
     if not sync_init.distributed.value:
         return False
@@ -94,25 +138,22 @@ def receive_distribution(rank, n_gpu, sync_init, sync_IDs):
         theano_functions = pickle.load(f)  # should be all in one list
     if sync_init.barriers.delete_pkl.wait() == 0:
         os.remove(PKL_FILE)  # leave no trace
-    synk_functions, g_inputs, g_shareds = \
-        unpack_functions(theano_functions, sync_init.n_user_fcns.value)
-    sync_IDs.vars, sync_IDs.datas = alloc_shared_IDs(len(g_shareds.vars), CREATE)
+    synk_functions, g_shareds = unpack_functions(theano_functions)
     sync_init.barriers.distribute_out.wait()
-    return synk_functions, g_inputs, g_shareds
+    return synk_functions, g_shareds
 
 
-def do_gpu_comms(sync_IDs, g_shareds, gpu_comm, master_rank):
-    shared_IDs = sync_IDs.vars[:sync_IDs.n_shared.value]
-    comm_ID = sync_IDs.comm.value
+def do_gpu_comms(comm_ID, sync_comm, g_shareds, gpu_comm, master_rank):
+    shared_IDs = sync_comm.vars[:sync_comm.n_shared.value]
     if comm_ID == ALL_GATHER:
         src = g_shareds.get_gpuarray(shared_IDs[0])
         dest = g_shareds.get_gpuarray(shared_IDs[1])
         gpu_comm.all_gather(src, dest)
     else:
         if comm_ID == REDUCE:
-            op = REDUCE_OPS_WORKER[sync_IDs.op.value]
+            op = REDUCE_OPS_WORKER[sync_comm.op.value]
         elif comm_ID == ALL_REDUCE:
-            op = REDUCE_OPS[sync_IDs.op.value]
+            op = REDUCE_OPS[sync_comm.op.value]
             avg = op == "avg"
             op = "sum" if avg else op
         for shared_ID in shared_IDs:
@@ -129,49 +170,37 @@ def do_gpu_comms(sync_IDs, g_shareds, gpu_comm, master_rank):
                 raise RuntimeError("Unrecognized GPU communication type in "
                     "worker.")
         if comm_ID == ALL_REDUCE and avg:
-            for shared_ID in shared_IDs:
-                g_shareds.avg_functions[shared_ID]()
+            g_shareds.call_avg_funcs(shared_IDs)
 
 
-def do_cpu_comms(sync_IDs, sync_scat, g_shareds, g_datas, rank):
-    comm_ID = sync_IDs.comm.value
-    n_shared = sync_IDs.n_shared.value
-    shared_IDs = sync_IDs.vars[:n_shared]
-    data_IDs = sync_IDs.datas[:n_shared]
+def do_cpu_comms(comm_ID, sync_comm, scatterer, g_shareds):
+    n_shared = sync_comm.n_shared.value
+    shared_vars = g_shareds.get_vars_from_IDs(sync_comm.vars[:n_shared])
     if comm_ID == SCATTER:
-        my_idxs = get_my_scat_idxs(sync_scat, rank)
-        for shared_ID, data_ID in zip(shared_IDs, data_IDs):
-            g_shareds.vars[shared_ID].set_value(g_datas[data_ID].data[my_idxs])
+        my_inputs, _ = scatterer.get_my_inputs(n_shared)
+        for var, my_input in zip(shared_vars, my_inputs):
+            var.set_value(my_input)
     else:
         raise RuntimeError("Unrecognized CPU comm type in worker.")
 
 
-def alloc_scat_idxs(sync_scat):
-    size = sync_scat.idxs_size.value
-    sync_scat.my_idxs_tag = sync_scat.idxs_tag.value
-    sync_scat.idxs_arr = _alloc_scat_idxs(size, sync_scat.my_idxs_tag, CREATE)
-
-
-def manage_data(sync_IDs, g_datas):
-    data_op = sync_IDs.op.value
+def manage_data(data_op, sync_data, scatterer):
     if data_op == DATA_CREATE:
-        dtype = DTYPES[sync_IDs.dtype.value]
-        ndim = sync_IDs.ndim.value
-        scatter = sync_IDs.scatter.value
-        data_ID = len(g_datas)
-        g_datas.append(BaseData(data_ID, dtype, ndim, scatter))
-    elif data_op == DATA_ALLOC:
-        synk_data = g_datas[sync_IDs.data.value]
+        dtype = DTYPES[sync_data.dtype.value]
+        ndim = sync_data.ndim.value
+        scatter = sync_data.scatter.value
+        scatterer.append(BaseData(dtype, ndim, scatter))
+        return
+    synk_data = scatterer.get_data(sync_data.ID.value)
+    if data_op == DATA_ALLOC:
         ndim = synk_data._ndim
-        shape = 1 if ndim == 0 else sync_IDs.shape[:ndim]
-        tag = sync_IDs.tag.value
-        synk_data._alloc_shmem(shape, tag)
+        shape = 1 if ndim == 0 else sync_data.shape[:ndim]
+        synk_data._alloc_shmem(sync_data.alloc_size.value, sync_data.tag.value)
+        synk_data._shape_data(shape)
     elif data_op == DATA_RESHAPE:
-        synk_data = g_datas[sync_IDs.data.value]
-        shape = sync_IDs.shape[:synk_data._ndim]
-        synk_data._reshape_shmem(shape)
+        shape = 1 if synk_data._ndim == 0 else sync_data.shape[:synk_data._ndim]
+        synk_data._shape_data(shape)
     elif data_op == DATA_FREE:
-        synk_data = g_datas[sync_IDs.data.value]
         synk_data._free_shmem()
     else:
         raise RuntimeError("Unrecognized data management ID in worker.")
@@ -185,21 +214,27 @@ def error_close(sync_exct):
         pass
 
 
-def worker_exct(rank, n_gpu, master_rank, sync):
+###############################################################################
+#                                                                             #
+#                          Main Executable                                    #
+#                                                                             #
+###############################################################################
+
+
+def worker_exct(rank, n_gpu, master_rank, sync, sync_scat):
     gpu_comm = use_gpu(rank, n_gpu, sync, False)
     if not gpu_comm:
         return  # (exit quietly)
 
-    distribution = receive_distribution(rank, n_gpu, sync.init, sync.IDs)
+    distribution = receive_distribution(rank, n_gpu, sync.init)
     if not distribution:
         return  # (exit quietly)
     else:
-        synk_functions, g_inputs, g_shareds = distribution
+        synk_fs, g_shareds = distribution
 
-    Function._rank = rank  # endow all functions
+    scatterer = Scatterer(sync_scat, n_gpu, rank)
+    accumulators = Accumulators()
     Function.master_rank = master_rank
-    g_datas = list()
-    sync.scat.my_idxs_tag = -1
 
     atexit.register(error_close, sync.exct)
 
@@ -208,15 +243,16 @@ def worker_exct(rank, n_gpu, master_rank, sync):
         if sync.exct.quit.value:
             atexit.unregister(error_close)
             return  # (exit successfully)
-        if sync.exct.ID.value == FUNCTION:
-            synk_functions[sync.IDs.func.value](sync.scat, g_datas, gpu_comm)
-        elif sync.exct.ID.value == GPU_COMM:
-            do_gpu_comms(sync.IDs, g_shareds, gpu_comm, master_rank)
-        elif sync.exct.ID.value == CPU_COMM:
-            do_cpu_comms(sync.IDs, sync.scat, g_shareds, g_datas, rank)
-        elif sync.exct.ID.value == DATA:
-            manage_data(sync.IDs, g_datas)
-
+        exct_ID = sync.exct.ID.value
+        sub_ID = sync.exct.sub_ID.value
+        if exct_ID == FUNCTION:
+            synk_fs[sub_ID](sync.func, scatterer, gpu_comm, accumulators)
+        elif exct_ID == GPU_COMM:
+            do_gpu_comms(sub_ID, sync.comm, g_shareds, gpu_comm, master_rank)
+        elif exct_ID == CPU_COMM:
+            do_cpu_comms(sub_ID, sync.comm, scatterer, g_shareds)
+        elif exct_ID == DATA:
+            manage_data(sub_ID, sync.data, scatterer)
         else:
             raise RuntimeError("Unrecognized exctution type in worker.")
         sync.exct.barrier_out.wait()  # Prevent premature shmem overwriting.

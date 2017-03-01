@@ -111,13 +111,9 @@ NP_TO_C_TYPE = {'float64': ctypes.c_double, np.float64: ctypes.c_double,
                 }
 
 
-def NpShmemArray(dtype, shape, tag, create=True, return_shmem=False):
+def NpShmemArray(dtype, shape, tag, create=True):
     ctype = NP_TO_C_TYPE.get(dtype, None)
     if ctype is None:
         raise ValueError("Unsupported numpy dtype: ", dtype)
     shmem = ShmemRawArray(ctype, int(np.prod(shape)), tag, create)
-    np_arr = np.ctypeslib.as_array(shmem).reshape(shape)
-    if return_shmem:
-        return np_arr, shmem
-    else:
-        return np_arr
+    return np.ctypeslib.as_array(shmem).reshape(shape)
