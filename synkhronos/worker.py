@@ -43,32 +43,31 @@ class Function(BaseFunction):
         if self._n_input > 0:
             scatterer.check_idxs_alloc()
         my_inputs, scatter = scatterer.get_my_inputs(self._n_input)
-        output_subset, new_collect, num_slices = self.receive_f_info(sync_func)
-        if num_slices == 1 or not any(scatter):
-            my_results = self._f(*my_inputs, output_subset=output_subset)
-        else:
-            if new_collect:
-                self._set_accum_fs(accumulators)
-            my_results = \
-                self._sliced_f(my_inputs, scatter, num_slices, output_subset)
+        output_subset, num_slices = self.receive_f_info(sync_func, accumulators)
+        my_results = \
+            self._sliced_f(my_inputs, scatter, num_slices, output_subset) \
+            if num_slices > 1 and any(scatter) else \
+            self._f(*my_inputs, output_subset=output_subset)
         self.collect_results(my_results, gpu_comm)
 
-    def receive_f_info(self, sync_func):
+    def receive_f_info(self, sync_func, accumulators):
+        num_slices = sync_func.n_slices.value
         if self._n_output == 0:
-            return None, False
-        output_set = list()
-        for i in range(self._n_output):
-            if sync_func.output_subset[i]:
-                output_set.append(i)
-        new_collect = any(output_set != self._output_set) or \
-            any(sync_func.collect_modes[output_set] != self._collects) or \
-            any(sync_func.reduce_ops[output_set] != self._ops)
-        if new_collect:
-            self._output_set = output_set
-            self._collects = sync_func.collect_modes[output_set]
-            self._ops = sync_func.reduce_ops[output_set]
-        output_subset = None if len(output_set) == self._n_output else output_set
-        return output_subset, new_collect, sync_func.n_slices.value
+            return None, num_slices
+        if sync_func.new_collect.value:
+            o_set = [i for i in range(self._n_output)
+                if sync_func.output_subset[i]]
+            self._output_set = o_set
+            self._collects = list()
+            self._ops = list()
+            for o in o_set:
+                self._collects.append(sync_func.collect_modes[o])
+                self._ops.append(sync_func.reduce_ops[o])
+            if num_slices > 1:
+                self._set_accum_fs(accumulators)
+        output_subset = \
+            None if len(self._output_set) == self._n_output else self._output_set
+        return output_subset, num_slices
 
     def collect_results(self, my_results, gpu_comm):
         if self._n_output == 0:
@@ -117,28 +116,28 @@ class Scatterer(BaseScatterer):
 ###############################################################################
 
 
-def unpack_functions(theano_functions, n_gpu):
+def unpack_functions(theano_functions, accumulators):
     """
     Worker will recover variables in the same order as the master committed
     them, so they will have the same ID (index).
     """
     synk_functions = list()
-    g_shareds = Shareds(n_gpu)
+    g_shareds = Shareds()
     for idx, fcn in enumerate(theano_functions):
-        g_shareds.register_func(fcn)
+        g_shareds.register_func(fcn, accumulators)
         synk_functions.append(Function(ID=idx, theano_function=fcn))
     return synk_functions, g_shareds
 
 
-def receive_distribution(rank, n_gpu, sync_init):
+def receive_distribution(rank, sync_init, accumulators):
     sync_init.barriers.distribute.wait()
     if not sync_init.distributed.value:
-        return False
+        return False, None
     with open(PKL_FILE, "rb") as f:
         theano_functions = pickle.load(f)  # should be all in one list
     if sync_init.barriers.delete_pkl.wait() == 0:
         os.remove(PKL_FILE)  # leave no trace
-    synk_functions, g_shareds = unpack_functions(theano_functions)
+    synk_functions, g_shareds = unpack_functions(theano_functions, accumulators)
     sync_init.barriers.distribute_out.wait()
     return synk_functions, g_shareds
 
@@ -170,7 +169,7 @@ def do_gpu_comms(comm_ID, sync_comm, g_shareds, gpu_comm, master_rank):
                 raise RuntimeError("Unrecognized GPU communication type in "
                     "worker.")
         if comm_ID == ALL_REDUCE and avg:
-            g_shareds.call_avg_funcs(shared_IDs)
+            g_shareds.call_avg_fs(shared_IDs)
 
 
 def do_cpu_comms(comm_ID, sync_comm, scatterer, g_shareds):
@@ -192,13 +191,12 @@ def manage_data(data_op, sync_data, scatterer):
         scatterer.append(BaseData(dtype, ndim, scatter))
         return
     synk_data = scatterer.get_data(sync_data.ID.value)
+    ndim = synk_data._ndim
+    shape = 1 if ndim == 0 else sync_data.shape[:ndim]
     if data_op == DATA_ALLOC:
-        ndim = synk_data._ndim
-        shape = 1 if ndim == 0 else sync_data.shape[:ndim]
         synk_data._alloc_shmem(sync_data.alloc_size.value, sync_data.tag.value)
         synk_data._shape_data(shape)
     elif data_op == DATA_RESHAPE:
-        shape = 1 if synk_data._ndim == 0 else sync_data.shape[:synk_data._ndim]
         synk_data._shape_data(shape)
     elif data_op == DATA_FREE:
         synk_data._free_shmem()
@@ -226,14 +224,12 @@ def worker_exct(rank, n_gpu, master_rank, sync, sync_scat):
     if not gpu_comm:
         return  # (exit quietly)
 
-    distribution = receive_distribution(rank, n_gpu, sync.init)
-    if not distribution:
-        return  # (exit quietly)
-    else:
-        synk_fs, g_shareds = distribution
-
-    scatterer = Scatterer(sync_scat, n_gpu, rank)
     accumulators = Accumulators()
+    synk_fs, g_shareds = receive_distribution(rank, sync.init, accumulators)
+    if not synk_fs:
+        return  # (exit quietly; distro failed somehow)
+    g_shareds.set_n_gpu(n_gpu)
+    scatterer = Scatterer(sync_scat, n_gpu, rank)
     Function.master_rank = master_rank
 
     atexit.register(error_close, sync.exct)

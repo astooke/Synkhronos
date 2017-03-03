@@ -12,28 +12,20 @@ from .common import PRE, REDUCE, GATHER, NO_COLLECT, REDUCE_AVG, REDUCE_OPS_WORK
 from .shmemarray import NpShmemArray, ShmemRawArray, NP_TO_C_TYPE
 
 
-class struct(dict):
-
-    def __init__(self, **kwargs):
-        dict.__init__(self, kwargs)
-        self.__dict__ = self
-
-
 ###############################################################################
 #                                                                             #
-#              Theano Shared Variables Registry   (master & workers)          #
+#                   Theano Shared Variables Registry                          #
 #                                                                             #
 ###############################################################################
 
 
-class Shareds(struct):
+class Shareds(object):
 
-    def __init__(self, n_gpu=None):
-        super().__init__()
+    def __init__(self):
         self.vars = list()
         self.names = list()
-        self.avg_funcs = list()
-        self.inv_n_gpu = None if n_gpu is None else 1 / n_gpu
+        self.avg_fs = list()
+        self.inv_n_gpu = 1
 
     def register_func(self, f, accumulators):
         for var in f.get_shared():
@@ -44,12 +36,12 @@ class Shareds(struct):
             self.vars.append(var)
             self.names.append(var.name)  # (could be None)
             if "int" in var.dtype:
-                self.avg_funcs.append(None)
+                self.avg_fs.append(None)  # (labmda x: x, ?)
             else:
                 avg_func = \
                     accumulators.get_function("avg_shared", var.dtype, var.ndim)
                 s_var = avg_func.get_shared()[0]
-                self.avg_funcs.append(avg_func.copy(swap={s_var: var}))
+                self.avg_fs.append(avg_func.copy(swap={s_var: var}))
 
     def get_ID(self, var_or_name):
         if var_or_name is None:
@@ -100,65 +92,15 @@ class Shareds(struct):
     def set_n_gpu(self, n_gpu):
         self.inv_n_gpu = 1 / n_gpu
 
-    def call_avg_funcs(self, var_IDs, avg_fac=None):
+    def call_avg_fs(self, var_IDs, avg_fac=None):
         avg_fac = self.inv_n_gpu if avg_fac is None else avg_fac
         for var_ID in var_IDs:
-            self.avg_funcs[var_ID](avg_fac)
+            self.avg_fs[var_ID](avg_fac)
 
 
 ###############################################################################
 #                                                                             #
-#                     Outputs Registry (master only)                          #
-#                                                                             #
-###############################################################################
-
-
-class Output(struct):
-
-    def __init__(self, gpu_var, to_cpu, avg_f):
-        super().__init__()
-        self.gpu_var = gpu_var
-        self.to_cpu = to_cpu
-        self.avg_f = avg_f
-
-
-class Outputs(struct):
-    """ Needed to provide same GpuArrayVariable for same output variable. """
-
-    def __init__(self):
-        super().__init__()
-        self.outputs = dict()
-
-    def register(self, accumulators, var):
-        if var in self.outputs:  # (var is dict key)
-            output = self.outputs[var]
-        else:
-            from theano.gpuarray.type import GpuArrayVariable
-            gpu_var = var.transfer(None)
-            to_cpu = not isinstance(var, GpuArrayVariable)
-            avg_f = accumulators.get_function("avg", var.dtype, var.ndim)
-            output = Output(gpu_var, to_cpu, avg_f)
-            self.outputs[var] = output
-        return output
-
-    def register_set(self, accumulators, outputs):
-        if outputs is None:
-            return [], []
-        else:
-            synk_outputs = list()
-            gpu_outputs = list()
-            if not isinstance(outputs, (list, tuple)):
-                outputs = (outputs,)
-            for var in outputs:
-                synk_output = self.register(accumulators, var)
-                synk_outputs.append(synk_output)
-                gpu_outputs.append(synk_output.gpu_var)
-            return synk_outputs, gpu_outputs
-
-
-###############################################################################
-#                                                                             #
-#           Data Container for Inputs & Shareds (master & workers)            #
+#               Base Data Container for Inputs & Shareds                      #
 #                                                                             #
 ###############################################################################
 
@@ -200,7 +142,7 @@ class BaseData(object):
 
 ###############################################################################
 #                                                                             #
-#                     Base Scatterer (master & workers)                       #
+#                          Base Scatterer                                     #
 #                                                                             #
 ###############################################################################
 
@@ -243,7 +185,7 @@ class BaseScatterer(object):
 
 ###############################################################################
 #                                                                             #
-#                     Base Function (master & workers)                        #
+#                       Base Synk Function                                    #
 #                                                                             #
 ###############################################################################
 
@@ -259,27 +201,34 @@ class BaseFunction(object):
         self._f = theano_function
         self._n_input = len([i for i in self._f.maker.inputs if not i.implicit])
         self._n_output = len(self._f.outputs)
-        self._output_set = -1  # (invalid value)
-        self._collects = -1
-        self._ops = -1
+        self._output_set = []
+        self._collects = []
+        self._ops = []
 
-    def _set_accum_fs(self, accumulators):
+    def _set_accum_fs(self, accumulators, do_accum=True):
         """ before barrier in master, after barrier in workers """
+        self._avg_fs = list()
         self._accum_fs = list()
-        for idx, mode_ID, op_ID in zip(self._output_set, self._collects_, self._ops):
+        for idx, mode_ID, op_ID in zip(self._output_set, self._collects, self._ops):
             dtype = self._f.outputs[idx].variable.dtype
             ndim = self._f.outputs[idx].variable.ndim
-            if mode_ID == REDUCE:
-                op = REDUCE_OPS_WORKER[op_ID]
-                self._accum_fs.append(accumulators.get_function(
-                    "reduce", dtype, ndim, op))
-            elif mode_ID == GATHER:
-                self._accum_fs.append(accumulators.get_function(
-                    "gather", dtype, ndim))
-            elif mode_ID == NO_COLLECT:
-                self._accum_fs.append(lambda x, y: y)
+            if do_accum:
+                if mode_ID == REDUCE:
+                    op = REDUCE_OPS_WORKER[op_ID]
+                    self._accum_fs.append(accumulators.get_function(
+                        "reduce", dtype, ndim, op))
+                elif mode_ID == GATHER:
+                    self._accum_fs.append(accumulators.get_function(
+                        "gather", dtype, ndim))
+                elif mode_ID == NO_COLLECT:
+                    self._accum_fs.append(lambda x, y: y)
+                else:
+                    raise RuntimeError("Unrecognized collect mode:", mode_ID)
+            if mode_ID == REDUCE and op_ID == REDUCE_AVG:
+                self._avg_fs.append(accumulators.get_function(
+                    "avg_output", dtype, ndim))
             else:
-                raise RuntimeError("Unrecognized collect mode:", mode_ID)
+                self._avg_fs.append(None)
 
     def _sliced_f(self, my_inputs, scatter, num_slices, output_subset):
         # assume num_slices > 1 and any(scatter) == True
@@ -304,11 +253,9 @@ class BaseFunction(object):
 
     def _avg_my_results(self, accum_rs, num_slices):
         inv_num = 1 / num_slices
-        for i_r, (i_o, accum_r, mode_ID, op_ID) in enumerate(
-                zip(self._output_set, accum_rs, self._collects, self._ops)):
-            if mode_ID == REDUCE:
-                if op_ID == REDUCE_AVG:
-                    accum_rs[i_r] = self._output.avg_fs[i_o](accum_r, inv_num)
+        for i, (r, avg_f) in enumerate(zip(accum_rs, self._avg_fs)):
+            if avg_f is not None:
+                accum_rs[i] = avg_f(r, inv_num)
         return accum_rs
 
 

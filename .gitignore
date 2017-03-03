@@ -87,3 +87,9 @@ ENV/
 
 # Rope project settings
 .ropeproject
+
+# Local functions
+*.pkl
+
+# MNIST data
+*ubyte.gz

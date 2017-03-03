@@ -1,6 +1,6 @@
 
 import pickle
-from common import PKL_PATH
+from .common import PKL_PATH
 
 
 MODES = ["reduce", "gather", "avg_output", "avg_shared"]
@@ -8,7 +8,7 @@ OPS = ["sum", "min", "max", "prod"]
 
 
 def make_name(mode, dtype, ndim, op=None):
-    name = mode + "_" + dtype + "_" + ndim
+    name = mode + "_" + dtype + "_" + str(ndim)
     name = name if op is None else name + "_" + op
     return name
 
@@ -42,19 +42,19 @@ def make_accum_f(mode, dtype, ndim, op=None):
     else:
         raise ValueError("Unrecognized mode: ", mode)
     name = make_name(mode, dtype, ndim, op)
-    return theano.function([x, y], z.tranfser(None), name=name)
+    return theano.function([x, y], z.transfer(None), name=name)
 
 
 def check_inputs(mode, dtype, ndim, op):
     if mode not in MODES:
-        raise KeyError("Invalid accumulator mode: ", mode)
+        raise KeyError("Invalid accumulator mode: {}".format(mode))
     if mode == "avg" and "int" in dtype:
-        raise KeyError("Cannot average integer dtype: ", dtype)
+        raise KeyError("Cannot average integer dtype: {}".format(dtype))
     if op is not None and op not in OPS:
-        raise KeyError("Invalid accumulator operation: ", op)
+        raise KeyError("Invalid accumulator operation: {}".format(op))
     ndim = int(ndim)
     if ndim < 0:
-        raise KeyError("Invalid number of dimensions: ", ndim)
+        raise KeyError("Invalid number of dimensions: {}".format(ndim))
 
 
 class Accumulators(object):

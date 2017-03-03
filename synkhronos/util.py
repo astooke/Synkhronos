@@ -5,14 +5,21 @@ Classes and functions used by master but which don't MODIFY globals.
 
 import numpy as np
 import multiprocessing as mp
-from ctypes import c_bool
+from ctypes import c_bool, c_long, c_int
 
 from .common import REDUCE, COLLECT_MODES, REDUCE_OPS, REDUCE_NO_OP
-from .variables import struct, BaseData
+from .variables import BaseData
+
+
+class struct(dict):
+
+    def __init__(self, **kwargs):
+        dict.__init__(self, kwargs)
+        self.__dict__ = self
 
 
 ###############################################################################
-#                              (fork)                                         #
+#                              fork                                           #
 
 
 def n_gpu_getter(mp_n_gpu):
@@ -49,7 +56,7 @@ def get_n_gpu(n_gpu, master_rank):
     return n_gpu, master_rank
 
 
-def build_sync(n_gpu, n_in_out, n_shared):
+def build_sync(n_gpu, n_in_out, n_shared, max_dim):
 
     mgr = mp.Manager()
     dictionary = mgr.dict()
@@ -82,7 +89,7 @@ def build_sync(n_gpu, n_in_out, n_shared):
         ID=mp.RawValue('i', 0),
         dtype=mp.RawValue('i', 0),  # (by ID)
         ndim=mp.RawValue('i', 0),
-        shape=np.ctypeslib.as_array(mp.RawArray('l', 10)),  # (ndim <= 10)
+        shape=np.ctypeslib.as_array(mp.RawArray('l', max_dim)),
         tag=mp.RawValue('i', 0),
         scatter=mp.RawValue(c_bool, True),
         alloc_size=mp.RawValue('l', 0),
@@ -92,6 +99,7 @@ def build_sync(n_gpu, n_in_out, n_shared):
         collect_modes=mp.RawArray('B', n_in_out),
         reduce_ops=mp.RawArray('B', n_in_out),
         n_slices=mp.RawValue('i', 0),
+        new_collect=mp.RawValue(c_bool, True),
     )
     sync = struct(
         init=init,
@@ -114,8 +122,9 @@ def build_sync_scat(n_gpu, n_in_out):
     )
     return sync
 
+
 ###############################################################################
-#                           (function)                                        #
+#                           Collect & Reduce                                  #
 
 
 def _check_collect_reduce(args, check_list, name):
@@ -171,6 +180,19 @@ def build_def_collect(outputs, collect_modes, reduce_ops):
     return collect_IDs, reduce_IDs
 
 
+###############################################################################
+#                           Inputs and Outputs                                #
+
+
+def prep_outputs(outputs):
+    from theano.gpuarray.type import GpuArrayVariable
+    if not isinstance(outputs, (list, tuple)):
+        outputs = (outputs,)
+    to_cpu = [not isinstance(var, GpuArrayVariable) for var in outputs]
+    gpu_vars = [var.transfer(None) for var in outputs]
+    return gpu_vars, to_cpu
+
+
 def check_output_subset(n_outputs, output_subset):
     if not isinstance(output_subset, list):
         raise TypeError("Optional param 'output_subset' must be a "
@@ -197,7 +219,7 @@ def check_synk_inputs(synk_datas, vars):
 
 
 ###############################################################################
-#                       Shared Memory Management                              #
+#                               Scatterer                                     #
 
 
 def build_scat_idxs(n_gpu, lengths, batch):
@@ -240,6 +262,7 @@ def check_batch_types(batch):
             raise TypeError("Param 'batch' must be either an integer, a slice, "
                 "or a list, tuple, or numpy array of integers.")
     return batch
+
 
 ###############################################################################
 #                           GPU Collectives                                   #

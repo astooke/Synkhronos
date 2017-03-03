@@ -24,6 +24,7 @@ import lasagne  # requires Theano flags: device=cpu, force_device=True
 import synkhronos as synk
 
 
+
 # ################## Download and prepare the MNIST dataset ##################
 # This is just some way of getting the MNIST dataset from an online location
 # and loading it into numpy arrays. It doesn't involve Lasagne at all.
@@ -330,7 +331,7 @@ def main(model='mlp', num_epochs=500):
         val_acc = 0
         val_batches = 0
         for batch in iterate_minibatch_indices(len(y_val), 500, shuffle=False):
-            err, acc = val_fn(X_val_synk, y_val_synk, batch=batch)
+            err, acc = val_fn(X_val_synk, y_val_synk, batch=batch, num_slices=1)
             val_err += err
             val_acc += acc
             val_batches += 1
