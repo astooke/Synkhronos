@@ -5,7 +5,7 @@ Inputs and Shareds used in both master and workers.
 Outputs used only in master.
 SynkFunction is base class for master and worker Function classes.
 """
-
+# import ipdb
 import numpy as np
 
 from .common import PRE, REDUCE, GATHER, NO_COLLECT, REDUCE_AVG, REDUCE_OPS_WORKER
@@ -41,7 +41,15 @@ class Shareds(object):
                 avg_func = \
                     accumulators.get_function("avg_shared", var.dtype, var.ndim)
                 s_var = avg_func.get_shared()[0]
-                self.avg_fs.append(avg_func.copy(swap={s_var: var}))
+                try:
+                    self.avg_fs.append(avg_func.copy(swap={s_var: var}))
+                except AssertionError as exc:
+                    # FIXME: handle broadcastable pattern
+                    print("Warning: Unable to make averaging function for var: "
+                        "{}\nAssertionError: {}\n(Hint: if given var is not "
+                        "GpuArray Type, initialize shared var with numpy "
+                        "array.)".format(var, exc))
+                    self.avg_fs.append(None)
 
     def get_ID(self, var_or_name):
         if var_or_name is None:
