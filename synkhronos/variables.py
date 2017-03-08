@@ -64,6 +64,8 @@ class Shareds(object):
             raise exc("Unrecognized shared var or name: ", var_or_name)
 
     def get_IDs(self, vars_or_names):
+        if not isinstance(vars_or_names, (list, tuple, dict)):
+            vars_or_names = (vars_or_names,)
         var_IDs = list()
         for var in vars_or_names:
             var_IDs.append(self.get_ID(var))
