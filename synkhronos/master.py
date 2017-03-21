@@ -13,15 +13,8 @@ from threading import BrokenBarrierError
 import atexit
 
 from .variables import Shareds, BaseFunction, BaseData, BaseScatterer
-from .common import use_gpu
-from .common import (PKL_FILE, FUNCTION, GPU_COMM, BROADCAST, REDUCE, ALL_REDUCE,
-                    ALL_GATHER, GATHER, CPU_COMM, SCATTER, DATA, DATA_FREE,
-                    DTYPES, DATA_CREATE, DATA_ALLOC, COLLECT_MODES, REDUCE_OPS,
-                    REDUCE_OPS_WORKER, REDUCE_AVG, DATA_RESHAPE, NO_COLLECT)
-from .util import (struct, get_n_gpu, build_sync, get_op_and_avg, build_scat_idxs,
-                   build_def_collect, check_collect_vs_op_IDs, check_batch_types,
-                   build_collect_IDs, build_reduce_IDs, check_output_subset,
-                   check_synk_inputs, build_sync_scat, prep_outputs)
+from .common import *
+from .util import *
 from .accumulators import Accumulators
 
 CREATE = True
@@ -42,6 +35,8 @@ g = struct(
     synk_functions=list(),
     accumulators=Accumulators(),
     gpu_comm=None,
+    # ZMQ
+    sockets=None,
 )
 
 
@@ -56,7 +51,7 @@ class Function(BaseFunction):
     """ Class of instances returned by ``synkhronos.function()``.  """
 
     _create = CREATE
-    _inv_n_gpu = None
+    _inv_n = None
 
     def __init__(self, ID, theano_function, gpu_outputs, to_cpu,
                  collect_IDs, reduce_IDs):
@@ -129,7 +124,7 @@ continue
             self._sliced_f(my_inputs, scatter, num_slices, output_subset) \
             if num_slices > 1 and any(scatter) else \
             self._f(*my_inputs, output_subset=output_subset)
-        results = self._collect_results(g.gpu_comm, my_results)
+        results = self._collect_results(g.gpu_comm, g.cpu_comm, my_results)
         exct_out()
         return results
 
@@ -300,27 +295,32 @@ continue
         reduce_IDs = check_collect_vs_op_IDs(collect_IDs, reduce_IDs)
         return collect_IDs, reduce_IDs
 
-    def _collect_results(self, gpu_comm, my_results):
+    def _collect_results(self, gpu_comm, cpu_comm, my_results):
         if self._n_output == 0:
             return []  # (what a Theano function with no outputs returns)
         results = list()
         if not isinstance(my_results, (list, tuple)):
             my_results = (my_results,)
         for r, mode_ID, op_ID in zip(my_results, self._collects, self._ops):
-            if mode_ID == REDUCE:
+            if mode_ID == GPU_REDUCE:
                 op = REDUCE_OPS_WORKER[op_ID]  # (no avg)
                 gpu_comm.reduce(r, op=op, dest=r)  # (in-place)
-            elif mode_ID == GATHER:
+            elif mode_ID == GPU_GATHER:
                 r = gpu_comm.all_gather(r)
+            elif mode_ID == CPU_REDUCE:
+                op = REDUCE_OPS[op_ID]
+                r = cpu_comm.reduce(r, op=op)
+            elif mode_ID == CPU_GATHER:
+                r = cpu_comm.gather(r)
             elif mode_ID != NO_COLLECT:
                 raise RuntimeError("Unrecognized collect mode in master "
                     "function: ", mode_ID)
             results.append(r)
         for i, (to_cpu, avg_f) in enumerate(zip(self._to_cpu, self._avg_fs)):
             if avg_f is not None:
-                results[i] = avg_f(results[i], self._inv_n_gpu)
+                results[i] = avg_f(results[i], self._inv_n)
             if to_cpu:
-                results[i] = np.array(results[i])
+                results[i] = np.asarray(results[i])
         results = results[0] if len(results) == 1 else results
         return results
 
@@ -541,14 +541,14 @@ class Scatterer(BaseScatterer):
 
     create = True
 
-    def __init__(self, n_gpu, n_in_out, rank):
-        self.sync = build_sync_scat(n_gpu, n_in_out)
-        super().__init__(n_gpu, rank)
+    def __init__(self, n_parallel, n_in_out, rank):
+        self.sync = build_sync_scat(n_parallel, n_in_out)
+        super().__init__(n_parallel, rank)
 
     def assign_inputs(self, synk_datas, batch):
         batch = check_batch_types(batch)
         lengths = [len(sd) for sd in synk_datas if sd._scatter]
-        self.sync.assign_idxs[:] = build_scat_idxs(self.n_gpu, lengths, batch)
+        self.sync.assign_idxs[:] = build_scat_idxs(self.n_parallel, lengths, batch)
         if batch is not None and not isinstance(batch, (int, slice)):
             self.sync.use_idxs_arr.value = True
             n_idxs = len(batch)
@@ -601,9 +601,9 @@ def broadcast(shared_vars):
         functions (None, optional): functions to have all shared vars broadcast
     """
     shared_IDs = gpu_comm_prep(g.sync.comm, g.shareds, shared_vars)
-    exct_in(GPU_COMM, BROADCAST)
+    exct_in(GPU_COMM, GPU_BROADCAST)
     for shared_ID in shared_IDs:
-        src = g.shareds.get_gpuarray(shared_ID)
+        src = g.shareds.get_array(shared_ID)
         g.gpu_comm.broadcast(src)
     exct_out()
 
@@ -629,10 +629,10 @@ def gather(shared_vars, dest=None, nd_up=None):
     shared_IDs = gpu_comm_prep(g.sync.comm, g.shareds, shared_vars)
     if len(shared_IDs) > 1 and dest is not None:
         raise ValueError("When specifying destination, can only gather one var.")
-    exct_in(GPU_COMM, GATHER)
+    exct_in(GPU_COMM, GPU_GATHER)
     results = list()
     for shared_ID in shared_IDs:
-        src = g.shareds.get_gpuarray(shared_ID)
+        src = g.shareds.get_array(shared_ID)
         r = g.gpu_comm.all_gather(src, dest=dest, nd_up=nd_up)
         results.append(r)
     exct_out()
@@ -667,10 +667,10 @@ def reduce(shared_vars, op="avg", in_place=True, dest=None):
     if avg and (not in_place or dest is not None):
         raise ValueError("Can only use 'average' op with in-place reduce "
             "(requires None dest).")
-    exct_in(GPU_COMM, REDUCE)
+    exct_in(GPU_COMM, GPU_REDUCE)
     results = list()
     for shared_ID in shared_IDs:
-        src = g.shareds.get_gpuarray(shared_ID)
+        src = g.shareds.get_array(shared_ID)
         dest = src if dest is None and in_place else dest
         results.append(g.gpu_comm.reduce(src, op, dest))
     if avg:
@@ -690,9 +690,9 @@ def all_reduce(shared_vars, op="avg"):
     """
     op, avg, op_ID = get_op_and_avg(op)
     shared_IDs = gpu_comm_prep(g.sync.comm, g.shareds, shared_vars, op_ID)
-    exct_in(GPU_COMM, ALL_REDUCE)
+    exct_in(GPU_COMM, GPU_ALL_REDUCE)
     for shared_ID in shared_IDs:
-        src = g.shareds.get_gpuarray(shared_ID)
+        src = g.shareds.get_array(shared_ID)
         g.gpu_comm.all_reduce(src, op, src)
     if avg:
         g.shareds.call_avg_fs(shared_IDs)
@@ -711,9 +711,9 @@ def all_gather(source, dest):
         dest (name or var): shared variable to receive values in
     """
     shared_IDs = gpu_comm_prep(g.sync.comm, g.shareds, [source, dest])
-    exct_in(GPU_COMM, ALL_GATHER)
-    src = g.shareds.get_gpuarray(shared_IDs[0])
-    dest = g.shareds.get_gpuarray(shared_IDs[1])
+    exct_in(GPU_COMM, GPU_ALL_GATHER)
+    src = g.shareds.get_array(shared_IDs[0])
+    dest = g.shareds.get_array(shared_IDs[1])
     g.gpu_comm.all_gather(src, dest)
     exct_out()
 
@@ -771,7 +771,7 @@ def scatter(vars_and_data, batch=None):
 ###############################################################################
 
 
-def fork(n_gpu=None, master_rank=0, n_in_out=20, n_shared=100, max_dim=10):
+def fork(n_parallel=None, use_gpu=True, master_rank=0, n_in_out=20, n_shared=100, max_dim=10):
     """Fork a python sub-process for each additional GPU and initialize.
 
     Call this function before building any Theano variables.  (Theano must be
@@ -780,7 +780,7 @@ def fork(n_gpu=None, master_rank=0, n_in_out=20, n_shared=100, max_dim=10):
     pygpu & NVIDIA NCCL.
 
     Args:
-        n_gpu (None, optional): Number of GPUs to use (default is all)
+        n_parallel (None, optional): Number of GPUs to use (default is all)
         master_rank (int, optional): default is 0
 
     Raises:
@@ -791,33 +791,39 @@ def fork(n_gpu=None, master_rank=0, n_in_out=20, n_shared=100, max_dim=10):
     """
     if g.forked:
         raise RuntimeError("Only fork once.")
-    from .worker import worker_exct
+    from .worker import worker_exct, profiling_worker
 
-    n_gpu, master_rank = get_n_gpu(n_gpu, master_rank)
-    g.shareds.set_n_gpu(n_gpu)
-    g.sync = build_sync(n_gpu, n_in_out, n_shared, max_dim)
-    g.scatterer = Scatterer(n_gpu, n_in_out, master_rank)
+    if use_gpu:
+        n_parallel = get_n_gpu(n_parallel, master_rank)
+    else:
+        raise NotImplementedError
+    g.shareds.set_n_parallel(n_parallel)
+    g.sync = build_sync(n_parallel, n_in_out, n_shared, max_dim)
+    g.scatterer = Scatterer(n_parallel, n_in_out, master_rank)
 
-    for rank in [r for r in range(n_gpu) if r != master_rank]:
-        args = (rank, n_gpu, master_rank, g.sync, g.scatterer.sync)
-        g.processes.append(mp.Process(target=worker_exct, args=args))
+    for rank in [r for r in range(n_parallel) if r != master_rank]:
+        args = (rank, n_parallel, master_rank, g.sync, g.scatterer.sync)
+        g.processes.append(mp.Process(target=profiling_worker, args=args))
     for p in g.processes:
         p.start()
 
     atexit.register(_close)
 
-    gpu_comm = use_gpu(master_rank, n_gpu, g.sync)
-    if not gpu_comm:
-        raise RuntimeError("At least one synkhronos worker failed to "
-            "initialize GPU during fork.")
-    else:
-        print("Synkhronos: " + str(n_gpu) + " GPUs succesfully initialized, "
-            "master rank: " + str(master_rank))
+    g.cpu_comm = init_cpu_comm(n_parallel, master_rank, g.sync.init)
+
+    if use_gpu:
+        g.gpu_comm = init_gpu(master_rank, n_parallel, g.sync)
+        if not g.gpu_comm:
+            raise RuntimeError("At least one synkhronos worker failed to "
+                "initialize GPU during fork.")
+        else:
+            print("Synkhronos: " + str(n_parallel) + " GPUs succesfully initialized, "
+                "master rank: " + str(master_rank))
+
 
     g.forked = True
-    g.gpu_comm = gpu_comm
-    Function._inv_n_gpu = 1 / n_gpu
-    return n_gpu
+    Function._inv_n = 1 / n_parallel
+    return n_parallel
 
 
 def distribute():

@@ -6,9 +6,11 @@ Classes and functions used by master but which don't MODIFY globals.
 import numpy as np
 import multiprocessing as mp
 from ctypes import c_bool, c_long, c_int
+import zmq
 
-from .common import REDUCE, COLLECT_MODES, REDUCE_OPS, REDUCE_NO_OP
+from .common import GPU_REDUCE, CPU_REDUCE, COLLECT_MODES, REDUCE_OPS, REDUCE_NO_OP
 from .variables import BaseData
+from .cpu_comm import CpuCommMaster
 
 
 class struct(dict):
@@ -26,57 +28,58 @@ def n_gpu_getter(mp_n_gpu):
     """
     Call in a subprocess because it prevents future subprocesses from using GPU.
     """
-    from pygpu import gpuarray
+    try:
+        from pygpu import gpuarray
+    except ImportError as exc:
+        raise exc("Must have pygpu installed to use GPUs.")
     mp_n_gpu.value = gpuarray.count_devices("cuda", 0)
 
 
 def get_n_gpu(n_gpu, master_rank):
-    master_rank = int(master_rank)
-    if n_gpu is not None:
-        n_gpu = int(n_gpu)
+    detected_n_gpu = mp.RawValue('i', 0)
+    p = mp.Process(target=n_gpu_getter, args=(detected_n_gpu,))
+    p.start()
+    p.join()
+    detected_n_gpu = detected_n_gpu.value
+    if detected_n_gpu == 0:
+        raise NotImplementedError
+    n_gpu = detected_n_gpu if n_gpu is None else int(n_gpu)
+    if n_gpu > detected_n_gpu:
+        raise ValueError("Requested to use {} GPUs but only found {}.".format(
+            n_gpu, detected_n_gpu))
+    if n_gpu == 1:
+        raise NotImplementedError("Only one GPU requested/detected; just use Theano for now.)")
     else:
-        #  Detect the number of devices present and use all.
-        mp_n_gpu = mp.RawValue('i', 0)
-        p = mp.Process(target=n_gpu_getter, args=(mp_n_gpu,))
-        p.start()
-        p.join()
-        n_gpu = mp_n_gpu.value
-        if n_gpu == 0:
-            # TODO: CPU-only mode.
-            raise RuntimeError("No cuda GPU detected by pygpu.")
-        elif n_gpu == 1:
-            # TODO: Allow to run on one GPU.
-            raise RuntimeError("Only one GPU detected; just use Theano.)")
-        else:
-            print("Detected and attempting to use {} GPUs...".format(n_gpu))
-
-    if master_rank not in list(range(n_gpu)):
-        raise ValueError("Invalid value for master rank: ", master_rank)
-
-    return n_gpu, master_rank
+        if int(master_rank) not in list(range(n_gpu)):
+            raise ValueError("Invalid value for master rank: {}".format(
+                master_rank))
+        print("Synkhronos attempting to use {} of {} detected GPUs...".format(
+            n_gpu, detected_n_gpu))
+    return n_gpu
 
 
-def build_sync(n_gpu, n_in_out, n_shared, max_dim):
+def build_sync(n_parallel, n_in_out, n_shared, max_dim):
 
     mgr = mp.Manager()
     dictionary = mgr.dict()
     barriers = struct(
-        gpu_inits=[mp.Barrier(n_gpu) for _ in range(3)],
-        distribute=mp.Barrier(n_gpu),
-        distribute_out=mp.Barrier(n_gpu),
-        delete_pkl=mp.Barrier(n_gpu - 1),
+        gpu_inits=[mp.Barrier(n_parallel) for _ in range(3)],
+        distribute=mp.Barrier(n_parallel),
+        distribute_out=mp.Barrier(n_parallel),
+        delete_pkl=mp.Barrier(n_parallel - 1),
     )
     init = struct(
         dict=dictionary,
         distributed=mp.RawValue(c_bool, False),
+        semaphore=mp.Semaphore(0),
         barriers=barriers,
     )
     exct = struct(
         quit=mp.RawValue(c_bool, False),
         ID=mp.RawValue('i', 0),
         sub_ID=mp.RawValue('i', 0),
-        barrier_in=mp.Barrier(n_gpu),
-        barrier_out=mp.Barrier(n_gpu),
+        barrier_in=mp.Barrier(n_parallel),
+        barrier_out=mp.Barrier(n_parallel),
         workers_OK=mp.Value(c_bool, True)  # (not Raw)
     )
     comm = struct(
@@ -111,9 +114,9 @@ def build_sync(n_gpu, n_in_out, n_shared, max_dim):
     return sync
 
 
-def build_sync_scat(n_gpu, n_in_out):
+def build_sync_scat(n_parallel, n_in_out):
     sync = struct(
-        assign_idxs=np.ctypeslib.as_array(mp.RawArray('l', n_gpu + 1)),
+        assign_idxs=np.ctypeslib.as_array(mp.RawArray('l', n_parallel + 1)),
         use_idxs_arr=mp.RawValue(c_bool, False),
         tag=mp.RawValue('i', 0),
         size=mp.RawValue('l', 0),
@@ -121,6 +124,17 @@ def build_sync_scat(n_gpu, n_in_out):
         data_IDs=mp.RawArray('i', n_in_out),
     )
     return sync
+
+
+def init_cpu_comm(n_parallel, master_rank, sync_init):
+    cpu_comm = CpuCommMaster(n_parallel)
+    ports = list(cpu_comm.ports)
+    ports.append(ports[master_rank])
+    sync_init.dict["ports"] = ports
+    for _ in range(n_parallel - 1):
+        sync_init.semaphore.release()
+    return cpu_comm
+
 
 
 ###############################################################################
@@ -160,7 +174,7 @@ def build_reduce_IDs(n_outputs, reduce_ops):
 
 def check_collect_vs_op_IDs(collect_IDs, reduce_IDs):
     for idx, (collect_ID, reduce_ID) in enumerate(zip(collect_IDs, reduce_IDs)):
-        if collect_ID == REDUCE:
+        if collect_ID in [GPU_REDUCE, CPU_REDUCE]:
             if reduce_ID == REDUCE_NO_OP:
                 raise ValueError("Had reduce operation 'None' for reduce "
                     "collection mode.")
@@ -222,7 +236,7 @@ def check_synk_inputs(synk_datas, vars):
 #                               Scatterer                                     #
 
 
-def build_scat_idxs(n_gpu, lengths, batch):
+def build_scat_idxs(n_parallel, lengths, batch):
     if batch is not None:
         if isinstance(batch, int):  # (size from 0 is used)
             max_idx = batch
@@ -244,7 +258,7 @@ def build_scat_idxs(n_gpu, lengths, batch):
         if lengths.count(end) != len(lengths):  # (fast)
             raise ValueError("If not providing param 'batch', all "
                 "inputs must be the same length.  Had lengths: ", lengths)
-    return np.linspace(start, end, n_gpu + 1, dtype=np.int64)
+    return np.linspace(start, end, n_parallel + 1, dtype=np.int64)
 
 
 def check_batch_types(batch):

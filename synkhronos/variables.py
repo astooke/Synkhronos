@@ -8,7 +8,8 @@ SynkFunction is base class for master and worker Function classes.
 # import ipdb
 import numpy as np
 
-from .common import PRE, REDUCE, GATHER, NO_COLLECT, REDUCE_AVG, REDUCE_OPS_WORKER
+from .common import (PRE, GPU_REDUCE, CPU_REDUCE, GPU_GATHER, CPU_GATHER,
+                     NO_COLLECT, REDUCE_AVG, REDUCE_OPS_WORKER)
 from .shmemarray import NpShmemArray, ShmemRawArray, NP_TO_C_TYPE
 
 
@@ -25,7 +26,7 @@ class Shareds(object):
         self.vars = list()
         self.names = list()
         self.avg_fs = list()
-        self.inv_n_gpu = 1
+        self.inv_n_parallel = 1
 
     def register_func(self, f, accumulators):
         for var in f.get_shared():
@@ -39,7 +40,7 @@ class Shareds(object):
                 self.avg_fs.append(None)  # (labmda x: x, ?)
             else:
                 avg_func = \
-                    accumulators.get_function("avg_shared", var.dtype, var.ndim)
+                    accumulators.get_function("avg_shared", var)
                 s_var = avg_func.get_shared()[0]
                 try:
                     self.avg_fs.append(avg_func.copy(swap={s_var: var}))
@@ -95,15 +96,15 @@ class Shareds(object):
     def get_vars_from_IDs(self, IDs):
         return [self.vars[i] for i in IDs]
 
-    def get_gpuarray(self, idx):
+    def get_array(self, idx):
         """ Re-reference the variable in case GPU allocation has changed. """
         return self.vars[idx].container.data
 
-    def set_n_gpu(self, n_gpu):
-        self.inv_n_gpu = 1 / n_gpu
+    def set_n_parallel(self, n_parallel):
+        self.inv_n_parallel = 1 / n_parallel
 
     def call_avg_fs(self, var_IDs, avg_fac=None):
-        avg_fac = self.inv_n_gpu if avg_fac is None else avg_fac
+        avg_fac = self.inv_n_parallel if avg_fac is None else avg_fac
         for var_ID in var_IDs:
             self.avg_fs[var_ID](avg_fac)
 
@@ -161,8 +162,8 @@ class BaseScatterer(object):
 
     create = False
 
-    def __init__(self, n_gpu, rank):
-        self.n_gpu = n_gpu
+    def __init__(self, n_parallel, rank):
+        self.n_parallel = n_parallel
         self.rank = rank
         self.synk_datas = list()
 
@@ -203,7 +204,7 @@ class BaseScatterer(object):
 class BaseFunction(object):
 
     _create = False
-    _n_gpu = None
+    _n_parallel = None
     _rank = None
 
     def __init__(self, ID, theano_function):
@@ -220,23 +221,19 @@ class BaseFunction(object):
         self._avg_fs = list()
         self._accum_fs = list()
         for idx, mode_ID, op_ID in zip(self._output_set, self._collects, self._ops):
-            dtype = self._f.outputs[idx].variable.dtype
-            ndim = self._f.outputs[idx].variable.ndim
+            var = self._f.outputs[idx].variable
             if do_accum:
-                if mode_ID == REDUCE:
+                if mode_ID in [GPU_REDUCE, CPU_REDUCE]:
                     op = REDUCE_OPS_WORKER[op_ID]
-                    self._accum_fs.append(accumulators.get_function(
-                        "reduce", dtype, ndim, op))
-                elif mode_ID == GATHER:
-                    self._accum_fs.append(accumulators.get_function(
-                        "gather", dtype, ndim))
+                    self._accum_fs.append(accumulators.get_function("reduce", var, op))
+                elif mode_ID in [GPU_GATHER, CPU_GATHER]:
+                    self._accum_fs.append(accumulators.get_function("gather", var))
                 elif mode_ID == NO_COLLECT:
                     self._accum_fs.append(lambda x, y: y)
                 else:
                     raise RuntimeError("Unrecognized collect mode:", mode_ID)
-            if mode_ID == REDUCE and op_ID == REDUCE_AVG:
-                self._avg_fs.append(accumulators.get_function(
-                    "avg_output", dtype, ndim))
+            if mode_ID == GPU_REDUCE and op_ID == REDUCE_AVG:
+                self._avg_fs.append(accumulators.get_function("avg_output", var))
             else:
                 self._avg_fs.append(None)
 

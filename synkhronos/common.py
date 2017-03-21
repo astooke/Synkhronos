@@ -27,22 +27,28 @@ DATA_ALLOC = 1
 DATA_RESHAPE = 2
 DATA_FREE = 3
 
-# GPU_COMM IDs
-REDUCE = 0  # NOTE: matches position in COLLECT_MODES
-GATHER = 1  # NOTE: matches position in COLLECT_MODES
-BROADCAST = 2
-ALL_REDUCE = 3
-ALL_GATHER = 4
+# COMM IDs
+GPU_REDUCE = 0  # NOTE: matches position in COLLECT_MODES
+CPU_REDUCE = 1
+GPU_GATHER = 2
+CPU_GATHER = 3
+NO_COLLECT = 4
+
+GPU_BROADCAST = 5
+CPU_BROADCAST = 6
+GPU_ALL_REDUCE = 7
+CPU_ALL_REDUCE = 8
+GPU_ALL_GATHER = 9
+CPU_ALL_GATHER = 10
 
 # CPU_COMM IDs
-SCATTER = 0
+SCATTER = 11
 
 # Where to put functions on their way to workers
 PKL_FILE = PKL_PATH + "synk_f_dump_" + PID + ".pkl"
 
 # Function Outputs
-COLLECT_MODES = ["reduce", "gather", None]  # NOTE: matches GPU_COMM IDs
-NO_COLLECT = 2
+COLLECT_MODES = ["gpu_reduce", "reduce", "gpu_gather", "gather", None]
 REDUCE_OPS = ["avg", "sum", "prod", "min", "max", None]  # (disallow others)
 REDUCE_AVG = 0
 REDUCE_NO_OP = 7
@@ -54,7 +60,7 @@ DTYPES = ['float64', 'float32', 'float16',
           ]
 
 
-def use_gpu(rank, n_gpu, sync, is_master=True):
+def init_gpu(rank, n_gpu, sync, is_master=True):
     """
     Happens after atexit.register(_close) in master and when g.forked=False,
     but before atexit.register(error_close) in workers, so should be careful.
@@ -100,3 +106,6 @@ def use_gpu(rank, n_gpu, sync, is_master=True):
         return False  # (someone else failed)
     else:
         return gpu_comm  # (success)
+
+
+

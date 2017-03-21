@@ -298,11 +298,11 @@ def main(model='mlp', num_epochs=500):
     # Compile a function performing a training step on a mini-batch (by giving
     # the updates dictionary) and returning the corresponding training loss:
     # train_fn = theano.function([input_var, target_var], loss, updates=updates)
-    train_fn = synk.function([input_var, target_var], loss, updates=updates, collect_modes=[None])
+    train_fn = synk.function([input_var, target_var], loss, updates=updates, collect_modes=[None], reduce_ops="avg")
 
     # Compile a second function computing the validation loss and accuracy:
     # val_fn = theano.function([input_var, target_var], [test_loss, test_acc])
-    val_fn = synk.function([input_var, target_var], [test_loss, test_acc])
+    val_fn = synk.function([input_var, target_var], [test_loss, test_acc], collect_modes="reduce", reduce_ops="avg")
 
     # Send all functions and variables to workers (in the future, automatic)
     synk.distribute()
@@ -326,7 +326,7 @@ def main(model='mlp', num_epochs=500):
             train_batches += 1
         mid_time = time.time()
 
-        # And a full pass over the validation data:
+        And a full pass over the validation data:
         val_err = 0
         val_acc = 0
         val_batches = 0
@@ -365,13 +365,13 @@ def main(model='mlp', num_epochs=500):
     print("  test accuracy:\t\t{:.2f} %".format(
         test_acc / test_batches * 100))
 
-    # Optionally, you could now dump the network weights to a file like this:
-    # np.savez('model.npz', *lasagne.layers.get_all_param_values(network))
-    #
-    # And load them again later on like this:
-    # with np.load('model.npz') as f:
-    #     param_values = [f['arr_%d' % i] for i in range(len(f.files))]
-    # lasagne.layers.set_all_param_values(network, param_values)
+    Optionally, you could now dump the network weights to a file like this:
+    np.savez('model.npz', *lasagne.layers.get_all_param_values(network))
+
+    And load them again later on like this:
+    with np.load('model.npz') as f:
+        param_values = [f['arr_%d' % i] for i in range(len(f.files))]
+    lasagne.layers.set_all_param_values(network, param_values)
 
 
 if __name__ == '__main__':

@@ -10,12 +10,10 @@ import pickle
 from threading import BrokenBarrierError
 import atexit
 
+
 from .variables import Shareds, BaseFunction, BaseData, BaseScatterer
-from .common import use_gpu
-from .common import (PKL_FILE, FUNCTION, GPU_COMM, BROADCAST, REDUCE, ALL_REDUCE,
-                  ALL_GATHER, GATHER, CPU_COMM, SCATTER,
-                  DATA_CREATE, DATA_ALLOC, DTYPES, NO_COLLECT,
-                  REDUCE_OPS, REDUCE_OPS_WORKER, DATA, DATA_RESHAPE, DATA_FREE)
+from .cpu_comm import CpuCommWorker
+from .common import *
 from .accumulators import Accumulators
 
 
@@ -34,7 +32,7 @@ class Function(BaseFunction):
     _create = CREATE
     master_rank = None
 
-    def __call__(self, sync_func, scatterer, gpu_comm, accumulators):
+    def __call__(self, sync_func, scatterer, gpu_comm, cpu_comm, accumulators):
         """
         1. Gather the right inputs from mp shared values.
         2. Execute local theano function on those inputs.
@@ -48,7 +46,7 @@ class Function(BaseFunction):
             self._sliced_f(my_inputs, scatter, num_slices, output_subset) \
             if num_slices > 1 and any(scatter) else \
             self._f(*my_inputs, output_subset=output_subset)
-        self.collect_results(my_results, gpu_comm)
+        self.collect_results(my_results, gpu_comm, cpu_comm)
 
     def receive_f_info(self, sync_func, accumulators):
         num_slices = sync_func.n_slices.value
@@ -69,17 +67,19 @@ class Function(BaseFunction):
             None if len(self._output_set) == self._n_output else self._output_set
         return output_subset, num_slices
 
-    def collect_results(self, my_results, gpu_comm):
+    def collect_results(self, my_results, gpu_comm, cpu_comm):
         if self._n_output == 0:
             return
         if not isinstance(my_results, (list, tuple)):
             my_results = (my_results,)
         for r, mode_ID, op_ID in zip(my_results, self._collects, self._ops):
-            if mode_ID == REDUCE:
+            if mode_ID == GPU_REDUCE:
                 op = REDUCE_OPS_WORKER[op_ID]
                 gpu_comm.reduce(r, op=op, root=self.master_rank)
-            elif mode_ID == GATHER:
+            elif mode_ID == GPU_GATHER:
                 gpu_comm.all_gather(r)
+            elif mode_ID in [CPU_REDUCE, CPU_GATHER]:
+                cpu_comm.send(r)
             elif mode_ID != NO_COLLECT:
                 raise RuntimeError("Unrecognized collect mode in worker function.")
 
@@ -144,31 +144,31 @@ def receive_distribution(rank, sync_init, accumulators):
 
 def do_gpu_comms(comm_ID, sync_comm, g_shareds, gpu_comm, master_rank):
     shared_IDs = sync_comm.vars[:sync_comm.n_shared.value]
-    if comm_ID == ALL_GATHER:
-        src = g_shareds.get_gpuarray(shared_IDs[0])
-        dest = g_shareds.get_gpuarray(shared_IDs[1])
+    if comm_ID == GPU_ALL_GATHER:
+        src = g_shareds.get_array(shared_IDs[0])
+        dest = g_shareds.get_array(shared_IDs[1])
         gpu_comm.all_gather(src, dest)
     else:
-        if comm_ID == REDUCE:
+        if comm_ID == GPU_REDUCE:
             op = REDUCE_OPS_WORKER[sync_comm.op.value]
-        elif comm_ID == ALL_REDUCE:
+        elif comm_ID == GPU_ALL_REDUCE:
             op = REDUCE_OPS[sync_comm.op.value]
             avg = op == "avg"
             op = "sum" if avg else op
         for shared_ID in shared_IDs:
-            src = g_shareds.get_gpuarray(shared_ID)
-            if comm_ID == BROADCAST:
+            src = g_shareds.get_array(shared_ID)
+            if comm_ID == GPU_BROADCAST:
                 gpu_comm.broadcast(src, root=master_rank)
-            elif comm_ID == REDUCE:
+            elif comm_ID == GPU_REDUCE:
                 gpu_comm.reduce(src, op=op, root=master_rank)
-            elif comm_ID == ALL_REDUCE:
+            elif comm_ID == GPU_ALL_REDUCE:
                 gpu_comm.all_reduce(src, op=op, dest=src)
-            elif comm_ID == GATHER:
+            elif comm_ID == GPU_GATHER:
                 gpu_comm.all_gather(src)
             else:
                 raise RuntimeError("Unrecognized GPU communication type in "
                     "worker.")
-        if comm_ID == ALL_REDUCE and avg:
+        if comm_ID == GPU_ALL_REDUCE and avg:
             g_shareds.call_avg_fs(shared_IDs)
 
 
@@ -219,17 +219,28 @@ def error_close(sync_exct):
 ###############################################################################
 
 
-def worker_exct(rank, n_gpu, master_rank, sync, sync_scat):
-    gpu_comm = use_gpu(rank, n_gpu, sync, False)
+def profiling_worker(*args, **kwargs):
+    import cProfile
+    cProfile.runctx('worker_exct(*args, **kwargs)', locals(), globals(),
+        "train_only_no_red_5itr.prof")
+
+
+def worker_exct(rank, n_parallel, master_rank, sync, sync_scat):
+
+    sync.init.semaphore.acquire()  # blocks worker but not master
+    cpu_comm = CpuCommWorker(sync.init.dict["ports"][rank])
+
+    gpu_comm = init_gpu(rank, n_parallel, sync, False)
     if not gpu_comm:
         return  # (exit quietly)
+
 
     accumulators = Accumulators()
     synk_fs, g_shareds = receive_distribution(rank, sync.init, accumulators)
     if not synk_fs:
         return  # (exit quietly; distro failed somehow)
-    g_shareds.set_n_gpu(n_gpu)
-    scatterer = Scatterer(sync_scat, n_gpu, rank)
+    g_shareds.set_n_parallel(n_parallel)
+    scatterer = Scatterer(sync_scat, n_parallel, rank)
     Function.master_rank = master_rank
 
     atexit.register(error_close, sync.exct)
@@ -242,7 +253,7 @@ def worker_exct(rank, n_gpu, master_rank, sync, sync_scat):
         exct_ID = sync.exct.ID.value
         sub_ID = sync.exct.sub_ID.value
         if exct_ID == FUNCTION:
-            synk_fs[sub_ID](sync.func, scatterer, gpu_comm, accumulators)
+            synk_fs[sub_ID](sync.func, scatterer, gpu_comm, cpu_comm, accumulators)
         elif exct_ID == GPU_COMM:
             do_gpu_comms(sub_ID, sync.comm, g_shareds, gpu_comm, master_rank)
         elif exct_ID == CPU_COMM:
