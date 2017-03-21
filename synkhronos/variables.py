@@ -46,7 +46,7 @@ class Shareds(object):
                     self.avg_fs.append(avg_func.copy(swap={s_var: var}))
                 except AssertionError as exc:
                     # FIXME: handle broadcastable pattern
-                    print("Warning: Unable to make averaging function for var: "
+                    print("WARNING: Unable to make averaging function for var: "
                         "{}\nAssertionError: {}\n(Hint: if given var is not "
                         "GpuArray Type, initialize shared var with numpy "
                         "array.)".format(var, exc))

@@ -326,7 +326,7 @@ def main(model='mlp', num_epochs=500):
             train_batches += 1
         mid_time = time.time()
 
-        And a full pass over the validation data:
+        # And a full pass over the validation data:
         val_err = 0
         val_acc = 0
         val_batches = 0
@@ -365,10 +365,10 @@ def main(model='mlp', num_epochs=500):
     print("  test accuracy:\t\t{:.2f} %".format(
         test_acc / test_batches * 100))
 
-    Optionally, you could now dump the network weights to a file like this:
+    # Optionally, you could now dump the network weights to a file like this:
     np.savez('model.npz', *lasagne.layers.get_all_param_values(network))
 
-    And load them again later on like this:
+    # And load them again later on like this:
     with np.load('model.npz') as f:
         param_values = [f['arr_%d' % i] for i in range(len(f.files))]
     lasagne.layers.set_all_param_values(network, param_values)

@@ -304,23 +304,33 @@ continue
         for r, mode_ID, op_ID in zip(my_results, self._collects, self._ops):
             if mode_ID == GPU_REDUCE:
                 op = REDUCE_OPS_WORKER[op_ID]  # (no avg)
+                print("master func doing GPU_REDUCE")
                 gpu_comm.reduce(r, op=op, dest=r)  # (in-place)
             elif mode_ID == GPU_GATHER:
+                print("master func doing GPU_GATHER")
                 r = gpu_comm.all_gather(r)
             elif mode_ID == CPU_REDUCE:
+                print("master func doing CPU_REDUCE")
                 op = REDUCE_OPS[op_ID]
                 r = cpu_comm.reduce(r, op=op)
             elif mode_ID == CPU_GATHER:
+                print("master func doing CPU_GATHER")
                 r = cpu_comm.gather(r)
             elif mode_ID != NO_COLLECT:
+                print("master func doing NO_COLLECT")
                 raise RuntimeError("Unrecognized collect mode in master "
                     "function: ", mode_ID)
             results.append(r)
         for i, (to_cpu, avg_f) in enumerate(zip(self._to_cpu, self._avg_fs)):
-            if avg_f is not None:
-                results[i] = avg_f(results[i], self._inv_n)
+            # FIXME: Broken since using broadcastable in accumulators?
+            # if avg_f is not None:
+            #     results[i] = avg_f(results[i], self._inv_n)
+            # if to_cpu:
+            #     results[i] = np.asarray(results[i])
             if to_cpu:
                 results[i] = np.asarray(results[i])
+            if avg_f is not None:
+                results[i] *= self._inv_n
         results = results[0] if len(results) == 1 else results
         return results
 

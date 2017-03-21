@@ -29,7 +29,7 @@ def make_accum_f(mode, var, op=None):
         name = make_name(mode, dtype, bcast, op)
         return theano.function([y], updates={s: s * y}, name=name)
 
-    t_type = T.TensorType(dtype, [False] * ndim)
+    t_type = T.TensorType(dtype=dtype, broadcastable=broadcastable)
     x = t_type('accum').transfer(None)
     if mode == "reduce":
         y = t_type('slice').transfer(None)
@@ -49,7 +49,7 @@ def make_accum_f(mode, var, op=None):
     return theano.function([x, y], z.transfer(None), name=name)
 
 
-def check_inputs(mode, op):
+def check_inputs(mode, op, dtype):
     if mode not in MODES:
         raise KeyError("Invalid accumulator mode: {}".format(mode))
     if mode == "avg" and "int" in dtype:
@@ -78,7 +78,7 @@ class Accumulators(object):
         Search unpickled cache; if not, search pickled cache; if not, build.
         """
         if check_args:
-            check_inputs(mode, op)
+            check_inputs(mode, op, var.dtype)
 
         dtype = var.dtype
         bcast = broadcastable_string(var.broadcastable)
