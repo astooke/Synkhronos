@@ -36,7 +36,7 @@ g = struct(
     accumulators=Accumulators(),
     gpu_comm=None,
     # ZMQ
-    sockets=None,
+    cpu_comm=None,
 )
 
 
@@ -168,11 +168,12 @@ continue
                 "length equal to the number of inputs.")
         synk_datas = list()
         for var, inpt, scat in zip(self._input.vars, inputs, scatter):
-            synk_data = data(variable=var,
-                             data=inpt,
+            synk_data = data(value=inpt,
+                             dtype=var.dtype,
                              scatter=scat,
                              force_cast=force_cast,
-                             oversize=oversize)
+                             oversize=oversize,
+                             )
             synk_datas.append(synk_data)
         return tuple(synk_datas)
 
@@ -304,33 +305,33 @@ continue
         for r, mode_ID, op_ID in zip(my_results, self._collects, self._ops):
             if mode_ID == GPU_REDUCE:
                 op = REDUCE_OPS_WORKER[op_ID]  # (no avg)
-                print("master func doing GPU_REDUCE")
+                # print("master func doing GPU_REDUCE")
                 gpu_comm.reduce(r, op=op, dest=r)  # (in-place)
             elif mode_ID == GPU_GATHER:
-                print("master func doing GPU_GATHER")
+                # print("master func doing GPU_GATHER")
                 r = gpu_comm.all_gather(r)
             elif mode_ID == CPU_REDUCE:
-                print("master func doing CPU_REDUCE")
+                # print("master func doing CPU_REDUCE")
                 op = REDUCE_OPS[op_ID]
                 r = cpu_comm.reduce(r, op=op)
             elif mode_ID == CPU_GATHER:
-                print("master func doing CPU_GATHER")
+                # print("master func doing CPU_GATHER")
                 r = cpu_comm.gather(r)
             elif mode_ID != NO_COLLECT:
-                print("master func doing NO_COLLECT")
+                # print("master func doing NO_COLLECT")
                 raise RuntimeError("Unrecognized collect mode in master "
                     "function: ", mode_ID)
             results.append(r)
         for i, (to_cpu, avg_f) in enumerate(zip(self._to_cpu, self._avg_fs)):
             # FIXME: Broken since using broadcastable in accumulators?
-            # if avg_f is not None:
-            #     results[i] = avg_f(results[i], self._inv_n)
-            # if to_cpu:
-            #     results[i] = np.asarray(results[i])
+            if avg_f is not None:
+                results[i] = avg_f(results[i], self._inv_n)
             if to_cpu:
                 results[i] = np.asarray(results[i])
-            if avg_f is not None:
-                results[i] *= self._inv_n
+            # if to_cpu:
+            #     results[i] = np.asarray(results[i])
+            # if avg_f is not None:
+            #     results[i] *= self._inv_n
         results = results[0] if len(results) == 1 else results
         return results
 
@@ -380,6 +381,7 @@ def function(inputs, outputs=None,
     collect_IDs, reduce_IDs = build_def_collect(outputs, collect_modes, reduce_ops)
     gpu_outputs, to_cpu = prep_outputs(outputs)
     theano_function = theano.function(inputs, gpu_outputs, **kwargs)
+    # theano_function.trust_input = True
     g.shareds.register_func(theano_function, g.accumulators)
     synk_function = Function(ID=len(g.synk_functions),  # Fcn can ID itself
                              theano_function=theano_function,
@@ -408,36 +410,28 @@ class Data(BaseData):
     ###########################################################################
     #                                  User                                   #
 
-    def __len__(self):
-        return 0 if self._data is None else len(self._data)
-
-    @property
-    def dtype(self):
-        """ Read-only """
-        return self._dtype
-
-    @property
-    def ndim(self):
-        """ Read-only """
-        return self._ndim
-
-    @property
-    def alloc_size(self):
-        """ Number of elements in underlying shared memory allocation. """
-        return len(self._alloc_size)
-
     def set_value(self, input_data, force_cast=False, oversize=1):
         """ Change data values and length.
         If need be, reshape or reallocate shared memory.
         Oversize only applies to underlying shared memory.  Numpy wrapper will
         be of exact shape of 'input_data'.
         """
-        data = self._condition_data(input_data, force_cast)
-        if data.size > self._alloc_size:
-            self._alloc_and_signal(g.sync.data, data.shape, float(oversize))
-        elif self._data.shape != data.shape:
-            self._shape_and_signal(g.sync.data, data.shape)
-        self._data[:] = data
+        input_data = self._condition_data(input_data, force_cast)
+        self._update_array(g.sync.data, input_data.shape, oversize)
+        self._data[:] = input_data
+
+    def set_length(self, length, oversize=1):
+        length = int(length)
+        if length < 1:
+            raise ValueError("Length must be a positive integer.")
+        shape = list(self.shape)
+        shape[0] = length
+        self._update_array(g.sync.data, shape, oversize)
+
+    def set_shape(self, shape, oversize=1):
+        if len(shape) != self.ndim:
+            raise ValueError("Cannot change number of dimensions.")
+        self._update_array(g.sync.data, shape, oversize)
 
     def condition_data(self, input_data, force_cast=False):
         """ See resulting data would be used internally, or raise error. """
@@ -454,6 +448,14 @@ class Data(BaseData):
     ###########################################################################
     #                           Helpers                                       #
 
+    def _update_array(self, sync_data, shape, oversize):
+        if shape != self.shape:
+            size = int(np.prod(shape))
+            if size > self._alloc_size:
+                self._alloc_and_signal(sync_data, shape, float(oversize))
+            else:
+                self._shape_and_signal(sync_data, shape)
+
     def _alloc_and_signal(self, sync_data, shape, oversize):
         self._tag += 1
         if oversize < 1 or oversize > 2:
@@ -463,83 +465,77 @@ class Data(BaseData):
         sync_data.alloc_size.value = size
         sync_data.tag.value = self._tag
         sync_data.ID.value = self._ID
-        if self._ndim > 0:
-            sync_data.shape[:self._ndim] = shape
+        sync_data.shape[:self.ndim] = shape
         exct_in(DATA, DATA_ALLOC)
         self._shape_data(shape)
         exct_out()
 
     def _shape_and_signal(self, sync_data, shape):
         sync_data.ID.value = self._ID
-        if self._ndim > 0:
-            sync_data.shape[:self._ndim] = shape
+        sync_data.shape[:self.ndim] = shape
         exct_in(DATA, DATA_RESHAPE)
         self._shape_data(shape)
         exct_out()
-
-    def _check_data(self):
-        if self._data is not self.data:
-            raise RuntimeError("Internal data state inconsistent; data "
-                "attribute has been improperly modified in {}.".format(self))
 
     def _condition_data(self, input_data, force_cast):
         """ takes in any data and returns numpy array """
         if force_cast:
             if not isinstance(input_data, np.ndarray):
-                input_data = np.asarray(input_data, dtype=self._dtype)
-            else:
+                input_data = np.asarray(input_data, dtype=self.dtype)
+            elif input_data.dtype != self.dtype:
                 input_data = input_data.astype(self.dtype)
         else:
             if not isinstance(input_data, np.ndarray):
                 input_data = np.asarray(input_data)
-            if input_data.dtype != self._dtype:
-                common_dtype = np.find_common_type([input_data.dtype, self._dtype], [])
-                if common_dtype == self._dtype:
-                    input_data = input_data.astype(self._dtype)
+            if input_data.dtype != self.dtype:
+                common_dtype = np.find_common_type([input_data.dtype, self.dtype], [])
+                if common_dtype == self.dtype:
+                    input_data = input_data.astype(self.dtype)
                 else:
                     raise TypeError("Non up-castable data type provided for "
                         "input..., received: {}, expected: {}.  Could use param "
                         "'force_cast=True' to force to expected dtype.".format(
-                            input_data.dtype, self._dtype))
-        if input_data.ndim != self._ndim:
-            raise TypeError("Wrong data ndim provided for input {}, "
-                "received: {}, expected: {}".format(self._var, input_data.ndim,
-                    self._ndim))
+                            input_data.dtype, self.dtype))
+        if input_data.ndim != self.ndim:
+            raise TypeError("Wrong data ndim provided for data, received: "
+                "{}, expected: {}".format(input_data.ndim, self.ndim))
         return input_data
 
 
 ###############################################################################
 #                                   User                                      #
 
-
-def data(variable=None, data=None, scatter=True, force_cast=False,
-         oversize=1, dtype=None, ndim=None):
+def data(var_or_arr=None, dtype=None, ndim=None, shape=None,
+         scatter=True, minibatch=False,
+         force_cast=False, oversize=1, name=None):
     """ Returns a Data object, which is the only type that synkhronos
     functions can receive for Theano inputs.
     """
-    if variable is not None:
-        if not isinstance(variable, (theano.tensor.TensorVariable,
-                                     theano.compile.sharedvalue.SharedVariable)):
-            raise TypeError("Optional param 'variable' must be type "
-                "TensorVariable or SharedVariable.")
-        dtype = variable.dtype
-        ndim = variable.ndim
-    if dtype is None or ndim is None:
-        if data is None:
-            raise TypeError("Must provide variable, or data, or dtype & ndim.")
-        np_data = np.array(data)
-        dtype = np_data.dtype.name if dtype is None else dtype
-        ndim = np_data.ndim if ndim is None else ndim
-    scatter = bool(scatter)
-    synk_data = Data(dtype, ndim, scatter)
+    if var_or_arr is not None:
+        try:
+            dtype = var_or_arr.dtype
+            ndim = var_or_arr.ndim
+        except AttributeError as exc:
+            raise exc("Input 'var_or_arr' must have dtype and ndim attributes.")
+    elif dtype is None or (ndim is None and shape is None):
+        raise TypeError("Must provide either 1) variable or array, or 2) dtype "
+            "and either ndim or shape.")
+    if shape is not None:
+        if ndim is not None:
+            if ndim != len(shape):
+                raise ValueError("Received inconsistent shape and ndim values.")
+        ndim = len(shape)
+    synk_data = Data(len(g.scatterer), dtype, ndim, scatter, minibatch, name)
     g.scatterer.append(synk_data)
     g.sync.data.dtype.value = DTYPES.index(dtype)
     g.sync.data.ndim.value = ndim
     g.sync.data.scatter.value = scatter
     exct_in(DATA, DATA_CREATE)  # init in worker, eagerly
     exct_out()  # (must finish before allocating)
-    if data is not None:
-        synk_data.set_value(data, force_cast, oversize)  # (checks dtype & ndim)
+    if isinstance(var_or_arr, np.ndarray):
+        synk_data.set_value(var_or_arr, force_cast, oversize)
+    elif shape is not None:
+        synk_data.set_shape(shape, oversize)
     return synk_data
 
 
@@ -557,16 +553,16 @@ class Scatterer(BaseScatterer):
 
     def assign_inputs(self, synk_datas, batch):
         batch = check_batch_types(batch)
-        lengths = [len(sd) for sd in synk_datas if sd._scatter]
-        self.sync.assign_idxs[:] = build_scat_idxs(self.n_parallel, lengths, batch)
-        if batch is not None and not isinstance(batch, (int, slice)):
-            self.sync.use_idxs_arr.value = True
-            n_idxs = len(batch)
-            if self.sync.idxs_arr is None or n_idxs > self.sync.idxs_arr.size:
-                self.alloc_idxs_arr(n_idxs)  # (will be oversized)
-            self.sync.idxs_arr[:n_idxs] = batch
-        else:
-            self.sync.use_idxs_arr.value = False
+        if any([sd.scatter for sd in synk_datas]):
+            self.sync.assign_idxs[:] = build_scat_idxs(self.n_parallel, synk_datas, batch)
+            if batch is not None and not isinstance(batch, (int, slice)):
+                self.sync.use_idxs_arr.value = True
+                n_idxs = len(batch)
+                if self.sync.idxs_arr is None or n_idxs > self.sync.idxs_arr.size:
+                    self.alloc_idxs_arr(n_idxs)  # (will be oversized)
+                self.sync.idxs_arr[:n_idxs] = batch
+            else:
+                self.sync.use_idxs_arr.value = False
         for i, synk_data in enumerate(synk_datas):
             self.sync.data_IDs[i] = synk_data._ID
 
@@ -813,7 +809,7 @@ def fork(n_parallel=None, use_gpu=True, master_rank=0, n_in_out=20, n_shared=100
 
     for rank in [r for r in range(n_parallel) if r != master_rank]:
         args = (rank, n_parallel, master_rank, g.sync, g.scatterer.sync)
-        g.processes.append(mp.Process(target=profiling_worker, args=args))
+        g.processes.append(mp.Process(target=worker_exct, args=args))
     for p in g.processes:
         p.start()
 
@@ -857,16 +853,16 @@ def distribute():
     """
     if not g.forked:
         raise RuntimeError("Need to fork before distributing functions.")
-    if g.distributed:
-        raise RuntimeError("Can distribute only once.")
+
+    print("Synkhronos distributing functions...")
     # Pickle all functions together in one list to preserve correspondences
     # among variables in different functions.
     theano_functions = [synk_func._f for synk_func in g.synk_functions]
     with open(PKL_FILE, "wb") as f:
         pickle.dump(theano_functions, f, pickle.HIGHEST_PROTOCOL)
-    g.sync.init.distributed.value = True
-    g.sync.init.barriers.distribute.wait()
-    g.sync.init.barriers.distribute_out.wait()
+    exct_in(DISTRIBUTE)
+    exct_out()
+    print("...distribution complete.")
     g.distributed = True
 
 
@@ -889,17 +885,11 @@ def _close():
     """ Called automatically on exit any time after fork. """
     if g.forked and not g.closed:
         # (try to get workers to exit quietly)
-        if not g.sync.init.distributed.value:
-            try:
-                g.sync.init.barriers.distribute.wait(1)
-            except BrokenBarrierError:
-                pass
-        else:
-            g.sync.exct.quit.value = True
-            try:
-                g.sync.exct.barrier_in.wait(1)
-            except BrokenBarrierError:
-                pass
+        g.sync.exct.quit.value = True
+        try:
+            g.sync.exct.barrier_in.wait(1)
+        except BrokenBarrierError:
+            pass
         for p in g.processes:
             p.join()
         g.closed = True
@@ -910,7 +900,7 @@ def check_active():
         raise RuntimeError("Cannot call this function on inactive synkhronos.")
 
 
-def exct_in(exct_ID, sub_ID):
+def exct_in(exct_ID, sub_ID=0):
     g.sync.exct.ID.value = exct_ID
     g.sync.exct.sub_ID.value = sub_ID
     g.sync.exct.barrier_in.wait()

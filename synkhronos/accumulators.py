@@ -128,4 +128,5 @@ class Accumulators(object):
         else:
             this_dtype[bcast] = accum_f
 
+        # accum_f.trust_input = True
         return accum_f

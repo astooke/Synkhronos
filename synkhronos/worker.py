@@ -10,7 +10,6 @@ import pickle
 from threading import BrokenBarrierError
 import atexit
 
-
 from .variables import Shareds, BaseFunction, BaseData, BaseScatterer
 from .cpu_comm import CpuCommWorker
 from .common import *
@@ -124,21 +123,19 @@ def unpack_functions(theano_functions, accumulators):
     synk_functions = list()
     g_shareds = Shareds()
     for idx, fcn in enumerate(theano_functions):
+        # fcn.trust_input = True
         g_shareds.register_func(fcn, accumulators)
         synk_functions.append(Function(ID=idx, theano_function=fcn))
     return synk_functions, g_shareds
 
 
-def receive_distribution(rank, sync_init, accumulators):
-    sync_init.barriers.distribute.wait()
-    if not sync_init.distributed.value:
-        return False, None
+def receive_distribution(sync_dist, accumulators, n_parallel):
     with open(PKL_FILE, "rb") as f:
         theano_functions = pickle.load(f)  # should be all in one list
-    if sync_init.barriers.delete_pkl.wait() == 0:
+    if sync_dist.barrier.wait() == 0:  # only one worker does it
         os.remove(PKL_FILE)  # leave no trace
     synk_functions, g_shareds = unpack_functions(theano_functions, accumulators)
-    sync_init.barriers.distribute_out.wait()
+    g_shareds.set_n_parallel(n_parallel)
     return synk_functions, g_shareds
 
 
@@ -188,11 +185,11 @@ def manage_data(data_op, sync_data, scatterer):
         dtype = DTYPES[sync_data.dtype.value]
         ndim = sync_data.ndim.value
         scatter = sync_data.scatter.value
-        scatterer.append(BaseData(dtype, ndim, scatter))
+        scatterer.append(BaseData(len(scatterer), dtype, ndim, scatter))
         return
     synk_data = scatterer.get_data(sync_data.ID.value)
-    ndim = synk_data._ndim
-    shape = 1 if ndim == 0 else sync_data.shape[:ndim]
+    ndim = synk_data.ndim
+    shape = sync_data.shape[:ndim]
     if data_op == DATA_ALLOC:
         synk_data._alloc_shmem(sync_data.alloc_size.value, sync_data.tag.value)
         synk_data._shape_data(shape)
@@ -222,7 +219,7 @@ def error_close(sync_exct):
 def profiling_worker(*args, **kwargs):
     import cProfile
     cProfile.runctx('worker_exct(*args, **kwargs)', locals(), globals(),
-        "train_only_no_red_5itr.prof")
+        "worker_nored_trust_inputs.prof")
 
 
 def worker_exct(rank, n_parallel, master_rank, sync, sync_scat):
@@ -230,17 +227,12 @@ def worker_exct(rank, n_parallel, master_rank, sync, sync_scat):
     sync.init.semaphore.acquire()  # blocks worker but not master
     cpu_comm = CpuCommWorker(sync.init.dict["ports"][rank])
 
-    gpu_comm = init_gpu(rank, n_parallel, sync, False)
+    gpu_comm = init_gpu(rank, n_parallel, sync, CREATE)
     if not gpu_comm:
         return  # (exit quietly)
 
-
-    accumulators = Accumulators()
-    synk_fs, g_shareds = receive_distribution(rank, sync.init, accumulators)
-    if not synk_fs:
-        return  # (exit quietly; distro failed somehow)
-    g_shareds.set_n_parallel(n_parallel)
     scatterer = Scatterer(sync_scat, n_parallel, rank)
+    accumulators = Accumulators()
     Function.master_rank = master_rank
 
     atexit.register(error_close, sync.exct)
@@ -252,7 +244,9 @@ def worker_exct(rank, n_parallel, master_rank, sync, sync_scat):
             return  # (exit successfully)
         exct_ID = sync.exct.ID.value
         sub_ID = sync.exct.sub_ID.value
-        if exct_ID == FUNCTION:
+        if exct_ID == DISTRIBUTE:
+            synk_fs, g_shareds = receive_distribution(sync.dist, accumulators, n_parallel)
+        elif exct_ID == FUNCTION:
             synk_fs[sub_ID](sync.func, scatterer, gpu_comm, cpu_comm, accumulators)
         elif exct_ID == GPU_COMM:
             do_gpu_comms(sub_ID, sync.comm, g_shareds, gpu_comm, master_rank)

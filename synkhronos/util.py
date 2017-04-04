@@ -5,8 +5,7 @@ Classes and functions used by master but which don't MODIFY globals.
 
 import numpy as np
 import multiprocessing as mp
-from ctypes import c_bool, c_long, c_int
-import zmq
+from ctypes import c_bool
 
 from .common import GPU_REDUCE, CPU_REDUCE, COLLECT_MODES, REDUCE_OPS, REDUCE_NO_OP
 from .variables import BaseData
@@ -62,17 +61,13 @@ def build_sync(n_parallel, n_in_out, n_shared, max_dim):
 
     mgr = mp.Manager()
     dictionary = mgr.dict()
-    barriers = struct(
-        gpu_inits=[mp.Barrier(n_parallel) for _ in range(3)],
-        distribute=mp.Barrier(n_parallel),
-        distribute_out=mp.Barrier(n_parallel),
-        delete_pkl=mp.Barrier(n_parallel - 1),
-    )
     init = struct(
         dict=dictionary,
-        distributed=mp.RawValue(c_bool, False),
         semaphore=mp.Semaphore(0),
-        barriers=barriers,
+        barriers=[mp.Barrier(n_parallel) for _ in range(3)],
+    )
+    dist = struct(
+        barrier=mp.Barrier(n_parallel - 1),
     )
     exct = struct(
         quit=mp.RawValue(c_bool, False),
@@ -106,6 +101,7 @@ def build_sync(n_parallel, n_in_out, n_shared, max_dim):
     )
     sync = struct(
         init=init,
+        dist=dist,
         exct=exct,
         comm=comm,
         data=data,
@@ -136,7 +132,6 @@ def init_cpu_comm(n_parallel, master_rank, sync_init):
     return cpu_comm
 
 
-
 ###############################################################################
 #                           Collect & Reduce                                  #
 
@@ -154,9 +149,9 @@ def _build_collect_reduce(n_outputs, args, check_list, name):
     _check_collect_reduce(args, check_list, name)
     if isinstance(args, (list, tuple)):
         if len(args) != n_outputs:
-            raise ValueError("Number of ", name, " args does not match number "
+            raise ValueError("Number of {} args does not match number "
                 "of outputs (or enter a single string to be used for all "
-                "outputs).  None is a valid entry.")
+                "outputs).  None is a valid entry.".format(name))
         arg_IDs = [check_list.index(arg) for arg in args]
     else:
         arg_ID = check_list.index(args)
@@ -199,6 +194,8 @@ def build_def_collect(outputs, collect_modes, reduce_ops):
 
 
 def prep_outputs(outputs):
+    if outputs is None:
+        return None, None
     from theano.gpuarray.type import GpuArrayVariable
     if not isinstance(outputs, (list, tuple)):
         outputs = (outputs,)
@@ -220,23 +217,25 @@ def check_output_subset(n_outputs, output_subset):
 
 
 def check_synk_inputs(synk_datas, vars):
-    for idx, (data, var) in enumerate(zip(synk_datas, vars)):
-        if not isinstance(data, BaseData):
-            raise ValueError("All function inputs must be of type SynkData.")
-        if data.dtype != var.dtype:
+    for idx, (s_data, var) in enumerate(zip(synk_datas, vars)):
+        if not isinstance(s_data, BaseData):
+            raise TypeError("All function inputs must be of type SynkData.")
+        if s_data.dtype != var.dtype:
             raise TypeError("Incorrect input dtype for position {}; expected: "
-                "{}, received: {}.".format(idx, var.dtype, data.dtype))
-        if data.ndim != var.ndim:
+                "{}, received: {}.".format(idx, var.dtype, s_data.dtype))
+        if s_data.ndim != var.ndim:
             raise TypeError("Incorrect input dimensions for position {}; "
-                "expected: {}, received: {}.".format(idx, var.ndim, data.ndim))
-        data._check_data()
+                "expected: {}, received: {}.".format(idx, var.ndim, s_data.ndim))
 
 
 ###############################################################################
 #                               Scatterer                                     #
 
 
-def build_scat_idxs(n_parallel, lengths, batch):
+def build_scat_idxs(n_parallel, synk_datas, batch):
+    scat_lens = [len(sd) for sd in synk_datas if sd._scatter and not sd._minibatch]
+    minibatch_lens = [len(sd) for sd in synk_datas if sd._scatter and sd._minibatch]
+    # FIXME: right now this assume at least one will be scatter and not minibatch
     if batch is not None:
         if isinstance(batch, int):  # (size from 0 is used)
             max_idx = batch
@@ -250,14 +249,20 @@ def build_scat_idxs(n_parallel, lengths, batch):
             max_idx = max(batch)
             start = 0
             end = len(batch)
-        if max_idx > min(lengths):
-            raise ValueError("Requested index out of range of input lengths.")
-    else:  # (i.e. no batch directive provided, use full array lengths)
+        if max_idx > min(scat_lens):
+            raise ValueError("Requested index out of range of input scat_lens.")
+    else:  # (i.e. no batch directive provided, use full array scat_lens)
         start = 0
-        end = lengths[0]
-        if lengths.count(end) != len(lengths):  # (fast)
+        end = scat_lens[0]
+        if scat_lens.count(end) + minibatch_lens.count(end) != \
+                len(scat_lens) + len(minibatch_lens):  # (fast)
             raise ValueError("If not providing param 'batch', all "
-                "inputs must be the same length.  Had lengths: ", lengths)
+                "inputs must be the same length.  Had scat_lengths: {}"
+                " and minibatch_lengths: {}".format(scat_lens, minibatch_lens))
+    if minibatch_lens:
+        if min(minibatch_lens) < end - start:
+            raise ValueError("Had minibatch input length less than size of "
+                "request batch.  Minibatch lengths: {}".format(minibatch_lens))
     return np.linspace(start, end, n_parallel + 1, dtype=np.int64)
 
 

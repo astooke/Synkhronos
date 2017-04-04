@@ -20,6 +20,7 @@ FUNCTION = 0
 GPU_COMM = 1
 CPU_COMM = 2
 DATA = 3
+DISTRIBUTE = 4
 
 # DATA OP IDs
 DATA_CREATE = 0
@@ -83,15 +84,15 @@ def init_gpu(rank, n_gpu, sync, is_master=True):
         sync.exct.workers_OK.value = False  # (let others know it failed)
         raise e
     finally:
-        sync.init.barriers.gpu_inits[0].wait()
+        sync.init.barriers[0].wait()
     if not sync.exct.workers_OK.value:
         return False  # (someone else failed)
 
     if is_master:
         sync.init.dict["comm_id"] = clique_id.comm_id
-        sync.init.barriers.gpu_inits[1].wait()
+        sync.init.barriers[1].wait()
     else:
-        sync.init.barriers.gpu_inits[1].wait()
+        sync.init.barriers[1].wait()
         clique_id.comm_id = sync.init.dict["comm_id"]
 
     try:
@@ -100,7 +101,7 @@ def init_gpu(rank, n_gpu, sync, is_master=True):
         sync.exct.workers_OK.value = False
         raise e
     finally:
-        sync.init.barriers.gpu_inits[2].wait()
+        sync.init.barriers[2].wait()
 
     if not sync.exct.workers_OK.value:
         return False  # (someone else failed)

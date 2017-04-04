@@ -298,7 +298,7 @@ def main(model='mlp', num_epochs=500):
     # Compile a function performing a training step on a mini-batch (by giving
     # the updates dictionary) and returning the corresponding training loss:
     # train_fn = theano.function([input_var, target_var], loss, updates=updates)
-    train_fn = synk.function([input_var, target_var], loss, updates=updates, collect_modes=[None], reduce_ops="avg")
+    train_fn = synk.function([input_var, target_var], loss, updates=updates, collect_modes="gpu_reduce", reduce_ops="sum")
 
     # Compile a second function computing the validation loss and accuracy:
     # val_fn = theano.function([input_var, target_var], [test_loss, test_acc])

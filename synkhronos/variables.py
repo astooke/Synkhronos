@@ -120,33 +120,74 @@ class BaseData(object):
 
     _create = False
 
-    def __init__(self, dtype, ndim, scatter=True):
-        self._dtype = dtype
+    def __init__(self, ID, dtype, ndim, scatter=True, minibatch=False, name=None):
+        self._ID = ID
         self._ctype = NP_TO_C_TYPE.get(dtype, None)
         if self._ctype is None:
-            raise TypeError("Unsupported numpy dtype: ", dtype)
-        self._ndim = ndim
-        self._data = None
-        self.data = None
+            raise TypeError("Unsupported numpy dtype: {}".format(dtype))
+        self._data = np.empty([0] * ndim, dtype=dtype)
         self._tag = 0
         self._shmem = None
+        self._np_shmem = None
         self._alloc_size = 0
         self._scatter = scatter  # Currently, fixed at instantiation.
-        self._ID = None  # (assigned by scatterer)
+        self._minibatch = minibatch
+        self._name = name
+
+    def __getitem__(self, k):
+        return self._data[k]
+
+    def __setitem__(self, k, v):
+        self._data[k] = v
+
+    def __len__(self):
+        return len(self._data)
+
+    @property
+    def dtype(self):
+        return self._data.dtype
+
+    @property
+    def ndim(self):
+        return self._data.ndim
+
+    @property
+    def shape(self):
+        return self._data.shape
+
+    @property
+    def size(self):
+        return self._data.size
+
+    @property
+    def data(self):
+        return self._data
+
+    @property
+    def alloc_size(self):
+        return self._alloc_size
+
+    @property
+    def name(self):
+        return self._name
+
+    @property
+    def scatter(self):
+        return self._scatter
 
     def _alloc_shmem(self, size, tag):
         tag = PRE + "_data_" + str(self._ID) + "_" + str(tag)
         self._shmem = ShmemRawArray(self._ctype, size, tag, self._create)
+        self._np_shmem = np.ctypeslib.as_array(self._shmem)
         self._alloc_size = size
 
     def _shape_data(self, shape):
-        np_arr = np.ctypeslib.as_array(self._shmem)
-        self._data = np_arr[:int(np.prod(shape))].reshape(shape)
-        self.data = self._data
+        self._data = self._np_shmem if len(shape) == 0 else \
+            self._np_shmem[:int(np.prod(shape))].reshape(shape)
 
     def _free_shmem(self):
-        self._data = None
-        self.data = None
+        self._data = np.empty([0] * self.ndim, dtype=self.dtype)
+        self._np_shmem = None
         self._shmem = None
         self._alloc_size = 0
 
@@ -167,14 +208,19 @@ class BaseScatterer(object):
         self.rank = rank
         self.synk_datas = list()
 
+    def __len__(self):
+        return len(self.synk_datas)
+
     def append(self, synk_data):
-        synk_data._ID = len(self.synk_datas)
         self.synk_datas.append(synk_data)
 
     def get_my_inputs(self, n_inputs):
         if n_inputs == 0:
             return (), ()
         my_idxs = slice(*self.sync.assign_idxs[self.rank:self.rank + 2])
+        minibatch_0 = min(self.sync.assign_idxs)  # minib is exactly right size
+        minibatch_idxs = \
+            slice(my_idxs.start + minibatch_0, my_idxs.stop + minibatch_0)
         if self.sync.use_idxs_arr.value:
             my_idxs = self.sync.idxs_arr[my_idxs]
         my_inputs = list()
@@ -182,7 +228,10 @@ class BaseScatterer(object):
         for data_ID in self.sync.data_IDs[:n_inputs]:
             synk_data = self.synk_datas[data_ID]
             if synk_data._scatter:
-                my_inputs.append(synk_data._data[my_idxs])
+                if synk_data._minibatch:  # (assumes already shuffled if needbe)
+                    my_inputs.append(synk_data._data[minibatch_idxs])
+                else:
+                    my_inputs.append(synk_data._data[my_idxs])
                 scatter.append(True)
             else:
                 my_inputs.append(synk_data._data)
@@ -215,6 +264,9 @@ class BaseFunction(object):
         self._output_set = []
         self._collects = []
         self._ops = []
+
+    def get_shared(self):
+        return self._f.get_shared()
 
     def _set_accum_fs(self, accumulators, do_accum=True):
         """ before barrier in master, after barrier in workers """
@@ -267,17 +319,10 @@ class BaseFunction(object):
 
 
 def slice_inputs(inputs, scatter, num_slices):
-    scat_idx = scatter.index(True)
-    length = len(inputs[scat_idx])  # (all scattered are same length)
+    length = len(inputs[scatter.index(True)])  # (all scattered are same length)
     edges = np.linspace(0, length, num_slices + 1, dtype='int64')
-    slices = list()
-    for idx in range(num_slices):
-        slices.append(slice(*edges[idx:idx + 2]))
-    for _slice in slices:
+    for slc in [slice(*edges[i:i + 2]) for i in range(num_slices)]:
         sliced_inputs = list()
         for inpt, scat in zip(inputs, scatter):
-            if scat:
-                sliced_inputs.append(inpt[_slice])
-            else:
-                sliced_inputs.append(inpt)
+            sliced_inputs.append(inpt[slc] if scat else inpt)
         yield tuple(sliced_inputs)
