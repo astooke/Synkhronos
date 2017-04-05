@@ -49,7 +49,9 @@ SCATTER = 11
 PKL_FILE = PKL_PATH + "synk_f_dump_" + PID + ".pkl"
 
 # Function Outputs
-COLLECT_MODES = ["gpu_reduce", "reduce", "gpu_gather", "gather", None]
+# COLLECT_MODES = ["gpu_reduce", "reduce", "gpu_gather", "gather", None]
+COLLECT_MODES = ["avg", "sum", "prod", "min", "max", "gather",
+    "c_avg", "c_sum", "c_prod", "c_min", "c_max", "c_gather", None]
 REDUCE_OPS = ["avg", "sum", "prod", "min", "max", None]  # (disallow others)
 REDUCE_AVG = 0
 REDUCE_NO_OP = 7

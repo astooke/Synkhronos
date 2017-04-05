@@ -12,7 +12,12 @@ import theano
 from threading import BrokenBarrierError
 import atexit
 
-from .variables import Shareds, BaseFunction, BaseData, BaseScatterer
+from .function import FunctionHelpers
+from .function import process_outputs, process_updates, process_givens
+from .data import DataHelpers
+from .scatterer import Scatterer
+from .shareds_registry import SharedsRegistry
+
 from .common import *
 from .util import *
 from .accumulators import Accumulators
@@ -30,7 +35,7 @@ g = struct(
     processes=list(),
     scatterer=None,
     # Theano
-    shareds=Shareds(),
+    shareds=SharedsRegistry(),
     # GPU
     synk_functions=list(),
     accumulators=Accumulators(),
@@ -42,47 +47,16 @@ g = struct(
 
 ###############################################################################
 #                                                                             #
-#                           Building Functions.                               #
+#                      Function: user callable methods                        #
 #                                                                             #
 ###############################################################################
 
 
-class Function(BaseFunction):
+class Function(FunctionHelpers):
     """ Class of instances returned by ``synkhronos.function()``.  """
 
-    _create = CREATE
-    _inv_n = None
-
-    def __init__(self, ID, theano_function, gpu_outputs, to_cpu,
-                 collect_IDs, reduce_IDs):
-        super().__init__(ID, theano_function)
-        self._build_input_desc()
-        self._build_output_desc(to_cpu, collect_IDs, reduce_IDs)
-
-    @property
-    def theano_function(self):
-        """ Read-only: returns the underlying Theano function. """
-        return self._f
-
-    @property
-    def name(self):
-        """ Read-only: will be same name as underlying Theano function. """
-        return self._f.name
-
-    @property
-    def collect_modes(self):
-        """ Read-only: default collect modes for outputs. """
-        return [COLLECT_MODES[i] for i in self._output.def_collect_IDs]
-
-    @property
-    def reduce_ops(self):
-        """ Read-only: default reduce operations for outputs. """
-        return [REDUCE_OPS[i] for i in self._output.def_reduce_IDs]
-
-    ###########################################################################
-    #                       User callables (use globals g directly)           #
-
-    def __call__(self, *args, **kwargs):
+    def __call__(self, *args, output_subset=None, batch=None, num_slices=1,
+                 **kwargs):
         """ Callable as in Theano function.
 
         When called, Synkhronos functions:
@@ -92,14 +66,6 @@ class Function(BaseFunction):
             3. Call the local theano function on assigned data subset,
             4. Collect results from workers and return it.
 
-        If an input array is the input shared memory array used internally for
-        that variable (as returned by the ``get_input_shmems()`` method), this
-        function will recognize that and will use the shared memories directly,
-        avoiding the additional memory copy.  To use only a subset of the total
-        batch size (`0-th` dimension) allocated in the shared memory, pass a
-        contiguous slice of the shared memory array starting at the beginning,
-        e.g. ``shmem[:new_batch_size]``.
-continue
         Theano function keyword argument ``output_subset`` is supported.
 
         Args:
@@ -110,23 +76,16 @@ continue
             RuntimeError: If not distributed or if synkhronos closed.
         """
         check_active()
-        output_subset = kwargs.pop("output_subset", None)
-        batch = kwargs.pop("batch", None)
-        collect_modes = kwargs.pop("collect_modes", None)
-        reduce_ops = kwargs.pop("reduce_ops", None)
-        num_slices = int(kwargs.pop("num_slices", 1))
-        self._share_inputs(g.scatterer, batch, args, kwargs)
-        self._update_f_info(g.sync.func, num_slices, output_subset,
-            collect_modes, reduce_ops, g.accumulators)
+        ordered_inputs = self._order_inputs(args, kwargs)
+        self._share_input_data(g.scatterer, ordered_inputs, batch)
+        self._update_f_info(g.sync.func, num_slices, output_subset)
         exct_in(FUNCTION, self._ID)
-        my_inputs, scatter = g.scatterer.get_my_inputs(self._n_input)
-        my_results = \
-            self._sliced_f(my_inputs, scatter, num_slices, output_subset) \
-            if num_slices > 1 and any(scatter) else \
-            self._f(*my_inputs, output_subset=output_subset)
-        results = self._collect_results(g.gpu_comm, g.cpu_comm, my_results)
+        my_results = self._run_function(g.scatterer, num_slices, output_subset)
+        outputs = self._collect_results(g.gpu_comm, g.cpu_comm, my_results)
         exct_out()
-        return results
+        if not self._return_list and len(outputs) == 1:
+            outputs = outputs[0]
+        return outputs
 
     def as_theano(self, *args, **kwargs):
         """Call the function in the master process only, as normal Theano.
@@ -139,6 +98,7 @@ continue
             *args (data): Normal data inputs to the Theano function
             **kwargs (data): Normal data inputs to the Theano function
         """
+        # FIXME:  possibly out of date.
         results = self._f(*args, **kwargs)
         if not isinstance(results, list):
             results = [results]
@@ -157,6 +117,7 @@ continue
         as if calling the Theano function.
         # TODO: move force_cast and oversize to function signature?
         """
+        # FIXME: possibly out of date
         force_cast = kwargs.pop("force_cast", False)
         oversize = kwargs.pop("oversize", 1)
         scatter = kwargs.pop("scatter", True)
@@ -177,167 +138,16 @@ continue
             synk_datas.append(synk_data)
         return tuple(synk_datas)
 
-    ###########################################################################
-    #                     Helpers (not for user)                              #
 
-    def _build_input_desc(self):
-        input_orderer = dict()
-        inputs = [i.variable for i in self._f.maker.inputs if not i.implicit]
-        for idx, var in enumerate(inputs):
-            input_orderer[var] = idx
-            if var.name is not None:
-                input_orderer[var.name] = idx
-        self._input = struct(
-            vars=inputs,
-            orderer=input_orderer,
-        )
-
-    def _build_output_desc(self, to_cpu, collect_IDs, reduce_IDs):
-        self._output = struct(
-            to_cpu=to_cpu,
-            full_set=list(range(self._n_output)),
-            prev_subset=-1,  # (invalid value so not same as first call)
-            def_collect_IDs=collect_IDs,
-            def_reduce_IDs=reduce_IDs,
-            prev_collect_modes=-1,
-            prev_reduce_ops=-1,
-        )
-
-    def _share_inputs(self, scatterer, batch, args, kwargs):
-        synk_inputs = self._order_inputs(args, kwargs)
-        if synk_inputs:
-            check_synk_inputs(synk_inputs, self._input.vars)
-            scatterer.assign_inputs(synk_inputs, batch)
-
-    def _order_inputs(self, args, kwargs):
-        """ Combine args and kwargs into one list of input args. """
-        n_args = len(args) + len(kwargs)
-        if n_args != self._n_input:
-            raise TypeError("Incorrect number of data inputs to function.")
-        if n_args == 0:
-            return ()
-        ordered_inputs = list(args) + [None] * len(kwargs)
-        for var, arg in kwargs.items():
-            idx = self._input.orderer.get(var, None)
-            if idx is None:
-                raise ValueError("Unrecognized keyword var or name: ", var)
-            if ordered_inputs[idx] is not None:
-                raise ValueError("Redundant input for variable: ", var)
-            ordered_inputs[idx] = arg
-        return tuple(ordered_inputs)
-
-    def _update_f_info(self, sync_func, num_slices,
-                      output_subset, collect_modes, reduce_ops, accumulators):
-        if self._n_input > 0:
-            if num_slices < 1:
-                raise ValueError("Invalid number of slices: ", num_slices)
-            sync_func.n_slices.value = num_slices
-        is_new_collect = False
-        if self._n_output > 0:
-            is_new_collect = self._update_output_set(output_subset)
-            is_new_collect |= self._update_collect(collect_modes, reduce_ops)
-            sync_func.new_collect.value = is_new_collect
-            if is_new_collect:
-                self._share_collect(sync_func, output_subset)
-        if is_new_collect:  # (no need if not any(scatter))
-            self._set_accum_fs(accumulators, num_slices > 1)  # before barrier
-
-    def _update_output_set(self, output_subset):
-        is_new_subset = output_subset != self._output.prev_subset
-        if is_new_subset:
-            if output_subset is None:
-                self._output_set = self._output.full_set
-                self._to_cpu = self._output.to_cpu
-            else:
-                check_output_subset(self._n_output, output_subset)
-                self._output_set = output_subset
-                self._to_cpu = [self._output.to_cpu[i] for i in output_subset]
-            self._output.prev_subset = output_subset
-        return is_new_subset
-
-    def _update_collect(self, collect_modes, reduce_ops):
-        is_new_collect = collect_modes != self._output.prev_collect_modes or \
-            reduce_ops != self._output.prev_reduce_ops
-        if is_new_collect:
-            self._output.prev_collect_modes = collect_modes
-            self._output.prev_reduce_ops = reduce_ops
-            collect_IDs, op_IDs = self._build_collect(collect_modes, reduce_ops)
-            self._collects = list()
-            self._ops = list()
-            for o in self._output_set:
-                self._collects.append(collect_IDs[o])
-                self._ops.append(op_IDs[o])
-        return is_new_collect
-
-    def _share_collect(self, sync_func, output_subset):
-        if output_subset is None:
-            for i in range(self._n_output):
-                sync_func.output_subset[i] = True
-        else:
-            for i in range(self._n_output):
-                sync_func.output_subset[i] = False
-            for i in output_subset:
-                sync_func.output_subset[i] = True
-        for i, (mode_ID, op_ID) in enumerate(zip(self._collects, self._ops)):
-            sync_func.collect_modes[i] = mode_ID  # (by position in output_set)
-            sync_func.reduce_ops[i] = op_ID
-
-    def _build_collect(self, collect_modes, reduce_ops):
-        if collect_modes is None and reduce_ops is None:
-            return self._output.def_collect_IDs, self._output.def_reduce_IDs
-        if collect_modes is None:
-            collect_IDs = self._output.def_collect_IDs
-        else:
-            collect_IDs = build_collect_IDs(self._n_output, collect_modes)
-        if reduce_ops is None:
-            reduce_IDs = self._output.def_reduce_IDs
-        else:
-            reduce_IDs = build_reduce_IDs(self._n_output, reduce_ops)
-        reduce_IDs = check_collect_vs_op_IDs(collect_IDs, reduce_IDs)
-        return collect_IDs, reduce_IDs
-
-    def _collect_results(self, gpu_comm, cpu_comm, my_results):
-        if self._n_output == 0:
-            return []  # (what a Theano function with no outputs returns)
-        results = list()
-        if not isinstance(my_results, (list, tuple)):
-            my_results = (my_results,)
-        for r, mode_ID, op_ID in zip(my_results, self._collects, self._ops):
-            if mode_ID == GPU_REDUCE:
-                op = REDUCE_OPS_WORKER[op_ID]  # (no avg)
-                # print("master func doing GPU_REDUCE")
-                gpu_comm.reduce(r, op=op, dest=r)  # (in-place)
-            elif mode_ID == GPU_GATHER:
-                # print("master func doing GPU_GATHER")
-                r = gpu_comm.all_gather(r)
-            elif mode_ID == CPU_REDUCE:
-                # print("master func doing CPU_REDUCE")
-                op = REDUCE_OPS[op_ID]
-                r = cpu_comm.reduce(r, op=op)
-            elif mode_ID == CPU_GATHER:
-                # print("master func doing CPU_GATHER")
-                r = cpu_comm.gather(r)
-            elif mode_ID != NO_COLLECT:
-                # print("master func doing NO_COLLECT")
-                raise RuntimeError("Unrecognized collect mode in master "
-                    "function: ", mode_ID)
-            results.append(r)
-        for i, (to_cpu, avg_f) in enumerate(zip(self._to_cpu, self._avg_fs)):
-            # FIXME: Broken since using broadcastable in accumulators?
-            if avg_f is not None:
-                results[i] = avg_f(results[i], self._inv_n)
-            if to_cpu:
-                results[i] = np.asarray(results[i])
-            # if to_cpu:
-            #     results[i] = np.asarray(results[i])
-            # if avg_f is not None:
-            #     results[i] *= self._inv_n
-        results = results[0] if len(results) == 1 else results
-        return results
+###############################################################################
+#                                                                             #
+#                        Building Functions                                   #
+#                                                                             #
+###############################################################################
 
 
-def function(inputs, outputs=None,
-             collect_modes="reduce", reduce_ops="avg",
+def function(inputs, outputs=None, bcast_inputs=None, updates=None,
+             givens=None, sliceable_shareds=None,
              **kwargs):
     """
     Use when creating a Theano function instead of ``theano.function``.
@@ -376,19 +186,50 @@ def function(inputs, outputs=None,
     if not g.forked:
         raise RuntimeError("Must fork before making functions for GPU.")
     if g.distributed:
-        raise RuntimeError("Cannot make new functions after distributing.")
+        raise RuntimeError("Cannot make new functions after distributing (for now).")
 
-    collect_IDs, reduce_IDs = build_def_collect(outputs, collect_modes, reduce_ops)
-    gpu_outputs, to_cpu = prep_outputs(outputs)
-    theano_function = theano.function(inputs, gpu_outputs, **kwargs)
-    # theano_function.trust_input = True
-    g.shareds.register_func(theano_function, g.accumulators)
+    if not isinstance(inputs, list):
+        raise TypeError("Input 'inputs' must be list.")
+    bcast_inputs = [] if bcast_inputs is None else bcast_inputs
+    if not isinstance(bcast_inputs, list):
+        raise TypeError("Input 'bcast_inputs' must be list if not None.")
+
+    gpu_outputs, to_cpu, output_modes = \
+        process_outputs(outputs)
+    reg_updates, update_vars, slc_update_gpu_outs, update_modes = \
+        process_updates(updates)
+    reg_givens, slc_givens, slc_idx_inputs, slc_shareds = \
+        process_givens(givens, sliceable_shareds)
+
+    theano_function = theano.function(
+        inputs=inputs + bcast_inputs,
+        outputs=gpu_outputs,  # a list, so function always returns list
+        updates=reg_updates,
+        givens=reg_givens,
+        **kwargs,
+    )
+    if len(update_outs) == 0 and sliced_shareds is None:
+        sliced_function = theano_function
+    else:
+        sliced_function = theano.function(
+            inputs=inputs + bcast_inputs + slc_idx_inputs,
+            outputs=gpu_outputs + slc_update_gpu_outs,
+            givens=slc_givens,
+            **kwargs,
+        )
+
+    g.shareds.register_func(theano_function)
     synk_function = Function(ID=len(g.synk_functions),  # Fcn can ID itself
                              theano_function=theano_function,
-                             gpu_outputs=gpu_outputs,
+                             sliced_function=sliced_function,
+                             inputs=inputs,
+                             bcast_inputs=bcast_inputs,
+                             slc_shareds=slc_shareds,
+                             update_vars=update_vars,
                              to_cpu=to_cpu,
-                             collect_IDs=collect_IDs,
-                             reduce_IDs=reduce_IDs,
+                             collect_modes=outputs_modes + update_modes,
+                             accumulators=g.accumulators,
+                             return_list=isinstance(outputs, list),
                              )
     g.synk_functions.append(synk_function)
     return synk_function
@@ -401,14 +242,9 @@ def function(inputs, outputs=None,
 ###############################################################################
 
 
-class Data(BaseData):
+class Data(DataHelpers):
     """ User will hold some of these: required instead of numpy arrays as
     inputs to functions or to collective communications. """
-
-    _create = True
-
-    ###########################################################################
-    #                                  User                                   #
 
     def set_value(self, input_data, force_cast=False, oversize=1):
         """ Change data values and length.
@@ -442,68 +278,12 @@ class Data(BaseData):
         (only way to shrink alloc_size) """
         self._free_shmem()
         g.sync.data.ID.value = self._ID
-        exct_in(DATA, DATA_FREE)
+        self._signal(DATA_FREE)
+
+    def _signal(self, sub_ID):
+        exct_in(DATA, sub_ID)
         exct_out()
 
-    ###########################################################################
-    #                           Helpers                                       #
-
-    def _update_array(self, sync_data, shape, oversize):
-        if shape != self.shape:
-            size = int(np.prod(shape))
-            if size > self._alloc_size:
-                self._alloc_and_signal(sync_data, shape, float(oversize))
-            else:
-                self._shape_and_signal(sync_data, shape)
-
-    def _alloc_and_signal(self, sync_data, shape, oversize):
-        self._tag += 1
-        if oversize < 1 or oversize > 2:
-            raise ValueError("param 'oversize' must be in range [1, 2].")
-        size = int(np.prod(shape) * oversize)
-        self._alloc_shmem(size, self._tag)
-        sync_data.alloc_size.value = size
-        sync_data.tag.value = self._tag
-        sync_data.ID.value = self._ID
-        sync_data.shape[:self.ndim] = shape
-        exct_in(DATA, DATA_ALLOC)
-        self._shape_data(shape)
-        exct_out()
-
-    def _shape_and_signal(self, sync_data, shape):
-        sync_data.ID.value = self._ID
-        sync_data.shape[:self.ndim] = shape
-        exct_in(DATA, DATA_RESHAPE)
-        self._shape_data(shape)
-        exct_out()
-
-    def _condition_data(self, input_data, force_cast):
-        """ takes in any data and returns numpy array """
-        if force_cast:
-            if not isinstance(input_data, np.ndarray):
-                input_data = np.asarray(input_data, dtype=self.dtype)
-            elif input_data.dtype != self.dtype:
-                input_data = input_data.astype(self.dtype)
-        else:
-            if not isinstance(input_data, np.ndarray):
-                input_data = np.asarray(input_data)
-            if input_data.dtype != self.dtype:
-                common_dtype = np.find_common_type([input_data.dtype, self.dtype], [])
-                if common_dtype == self.dtype:
-                    input_data = input_data.astype(self.dtype)
-                else:
-                    raise TypeError("Non up-castable data type provided for "
-                        "input..., received: {}, expected: {}.  Could use param "
-                        "'force_cast=True' to force to expected dtype.".format(
-                            input_data.dtype, self.dtype))
-        if input_data.ndim != self.ndim:
-            raise TypeError("Wrong data ndim provided for data, received: "
-                "{}, expected: {}".format(input_data.ndim, self.ndim))
-        return input_data
-
-
-###############################################################################
-#                                   User                                      #
 
 def data(var_or_arr=None, dtype=None, ndim=None, shape=None,
          scatter=True, minibatch=False,
@@ -537,40 +317,6 @@ def data(var_or_arr=None, dtype=None, ndim=None, shape=None,
     elif shape is not None:
         synk_data.set_shape(shape, oversize)
     return synk_data
-
-
-###############################################################################
-#                            Scatterer.                                       #
-
-
-class Scatterer(BaseScatterer):
-
-    create = True
-
-    def __init__(self, n_parallel, n_in_out, rank):
-        self.sync = build_sync_scat(n_parallel, n_in_out)
-        super().__init__(n_parallel, rank)
-
-    def assign_inputs(self, synk_datas, batch):
-        batch = check_batch_types(batch)
-        if any([sd.scatter for sd in synk_datas]):
-            self.sync.assign_idxs[:] = build_scat_idxs(self.n_parallel, synk_datas, batch)
-            if batch is not None and not isinstance(batch, (int, slice)):
-                self.sync.use_idxs_arr.value = True
-                n_idxs = len(batch)
-                if self.sync.idxs_arr is None or n_idxs > self.sync.idxs_arr.size:
-                    self.alloc_idxs_arr(n_idxs)  # (will be oversized)
-                self.sync.idxs_arr[:n_idxs] = batch
-            else:
-                self.sync.use_idxs_arr.value = False
-        for i, synk_data in enumerate(synk_datas):
-            self.sync.data_IDs[i] = synk_data._ID
-
-    def alloc_idxs_arr(self, n_idxs):
-        size = int(n_idxs * 1.1)  # (always some extra)
-        self.sync.tag.value += 1
-        self.sync.size.value = size
-        self._alloc_idxs_arr(size, self.sync.tag.value)
 
 
 ###############################################################################
@@ -838,9 +584,8 @@ def distribute():
     Pickles all theano functions built with this package (i.e. using
     ``synkhronos.function()``) into one file, which workers unpickle.  Theano's
     behavior is to include all shared variable values in the file.  Workers are
-    aware of correspondences among input and shared variables used in multiple
-    functions, for efficient memory usage.  Functions are compiled in the master
-    only.
+    aware of correspondences among input and shared variables used across
+    multiple functions.
 
     In the future, distribution will happen automatically, lazily at the time of
     any function call when it is necessary.  It will remain optional for the
@@ -854,12 +599,12 @@ def distribute():
     if not g.forked:
         raise RuntimeError("Need to fork before distributing functions.")
 
-    print("Synkhronos distributing functions...")
-    # Pickle all functions together in one list to preserve correspondences
+    # Pickle all functions together into one file to preserve correspondences
     # among variables in different functions.
-    theano_functions = [synk_func._f for synk_func in g.synk_functions]
+    print("Synkhronos distributing functions...")
+    distribution = [sf._get_distro_info for sf in g.synk_functions]
     with open(PKL_FILE, "wb") as f:
-        pickle.dump(theano_functions, f, pickle.HIGHEST_PROTOCOL)
+        pickle.dump(distribution, f, pickle.HIGHEST_PROTOCOL)
     exct_in(DISTRIBUTE)
     exct_out()
     print("...distribution complete.")

@@ -31,7 +31,7 @@ class CpuCommMaster(object):
         if op in ["sum", "avg"]:
             recv_arr = self.vec_ones.dot(recv_buf)  # parallel; np.mean is not
             if op == "avg":
-                recv_arr *= 1 / self.n
+                recv_arr /= self.n
         elif op == "max":
             recv_arr = recv_buf.max(axis=0)
         elif op == "min":
@@ -68,12 +68,12 @@ class CpuCommMaster(object):
         if scat_dim != 0:
             raise NotImplementedError
         n_data = arr.shape[scat_dim]
-        n = -(- n_data // n_gpu)  # (ceiling div)
+        n = -(- n_data // self.n)  # (ceiling div)
         last_n = n
         for socket in self.sockets[:-1]:
             send_nd_array(socket, arr[last_n:last_n + n])
             last_n += n
-        send_nd_array(sockets[:-1], arr[last_n:])
+        send_nd_array(self.sockets[-1], arr[last_n:])
         return arr[:n]
 
 

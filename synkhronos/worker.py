@@ -10,6 +10,11 @@ import pickle
 from threading import BrokenBarrierError
 import atexit
 
+from .function import WorkerFunction
+from .data import BaseData
+from .scatterer import WorkerScatterer
+from .shareds_registry import SharedsRegistry
+
 from .variables import Shareds, BaseFunction, BaseData, BaseScatterer
 from .cpu_comm import CpuCommWorker
 from .common import *
@@ -18,96 +23,6 @@ from .accumulators import Accumulators
 
 CREATE = False
 
-
-###############################################################################
-#                                                                             #
-#                               Classes                                       #
-#                                                                             #
-###############################################################################
-
-
-class Function(BaseFunction):
-
-    _create = CREATE
-    master_rank = None
-
-    def __call__(self, sync_func, scatterer, gpu_comm, cpu_comm, accumulators):
-        """
-        1. Gather the right inputs from mp shared values.
-        2. Execute local theano function on those inputs.
-        3. Send results back to master.
-        """
-        if self._n_input > 0:
-            scatterer.check_idxs_alloc()
-        my_inputs, scatter = scatterer.get_my_inputs(self._n_input)
-        output_subset, num_slices = self.receive_f_info(sync_func, accumulators)
-        my_results = \
-            self._sliced_f(my_inputs, scatter, num_slices, output_subset) \
-            if num_slices > 1 and any(scatter) else \
-            self._f(*my_inputs, output_subset=output_subset)
-        self.collect_results(my_results, gpu_comm, cpu_comm)
-
-    def receive_f_info(self, sync_func, accumulators):
-        num_slices = sync_func.n_slices.value
-        if self._n_output == 0:
-            return None, num_slices
-        if sync_func.new_collect.value:
-            o_set = [i for i in range(self._n_output)
-                if sync_func.output_subset[i]]
-            self._output_set = o_set
-            self._collects = list()
-            self._ops = list()
-            for o in o_set:
-                self._collects.append(sync_func.collect_modes[o])
-                self._ops.append(sync_func.reduce_ops[o])
-            if num_slices > 1:
-                self._set_accum_fs(accumulators)
-        output_subset = \
-            None if len(self._output_set) == self._n_output else self._output_set
-        return output_subset, num_slices
-
-    def collect_results(self, my_results, gpu_comm, cpu_comm):
-        if self._n_output == 0:
-            return
-        if not isinstance(my_results, (list, tuple)):
-            my_results = (my_results,)
-        for r, mode_ID, op_ID in zip(my_results, self._collects, self._ops):
-            if mode_ID == GPU_REDUCE:
-                op = REDUCE_OPS_WORKER[op_ID]
-                gpu_comm.reduce(r, op=op, root=self.master_rank)
-            elif mode_ID == GPU_GATHER:
-                gpu_comm.all_gather(r)
-            elif mode_ID in [CPU_REDUCE, CPU_GATHER]:
-                cpu_comm.send(r)
-            elif mode_ID != NO_COLLECT:
-                raise RuntimeError("Unrecognized collect mode in worker function.")
-
-
-class Scatterer(BaseScatterer):
-
-    create = False
-
-    def __init__(self, sync, *args):
-        super().__init__(*args)
-        self.sync = sync
-        self.tag = -1
-
-    def get_my_idxs(self):
-        self.check_idxs_alloc()
-        return super().get_my_idxs()
-
-    def check_idxs_alloc(self):
-        """ (lazy update) """
-        if self.sync.use_idxs_arr.value:
-            if self.tag != self.sync.tag.value:
-                size = self.sync.size.value
-                self.tag = self.sync.tag.value
-                self._alloc_idxs_arr(size, self.tag)
-
-    def get_data(self, data_ID):
-        return self.synk_datas[data_ID]
-
-
 ###############################################################################
 #                                                                             #
 #                             Tasks                                           #
@@ -115,26 +30,31 @@ class Scatterer(BaseScatterer):
 ###############################################################################
 
 
-def unpack_functions(theano_functions, accumulators):
+def unpack_distro(distribution, accumulators):
     """
     Worker will recover variables in the same order as the master committed
     them, so they will have the same ID (index).
     """
-    synk_functions = list()
+    synk_funcs = list()
     g_shareds = Shareds()
-    for idx, fcn in enumerate(theano_functions):
-        # fcn.trust_input = True
-        g_shareds.register_func(fcn, accumulators)
-        synk_functions.append(Function(ID=idx, theano_function=fcn))
-    return synk_functions, g_shareds
+    for i, f_info in enumerate(distribution):
+        if f_info["sliced_function"] is None:  # (avoided duplicate pickling)
+            f_info["sliced_function"] = f_info["theano_function"]
+        synk_funcs.append(WorkerFunction(ID=i,
+                                         accumulators=accumulators,
+                                         **f_info,
+                                         )
+        )
+        g_shareds.register_func(f_info["theano_function"], accumulators)
+    return synk_funcs, g_shareds
 
 
 def receive_distribution(sync_dist, accumulators, n_parallel):
     with open(PKL_FILE, "rb") as f:
-        theano_functions = pickle.load(f)  # should be all in one list
+        distribution = pickle.load(f)  # should be all in one list
     if sync_dist.barrier.wait() == 0:  # only one worker does it
         os.remove(PKL_FILE)  # leave no trace
-    synk_functions, g_shareds = unpack_functions(theano_functions, accumulators)
+    synk_functions, g_shareds = unpack_distro(distribution, accumulators)
     g_shareds.set_n_parallel(n_parallel)
     return synk_functions, g_shareds
 
@@ -231,7 +151,7 @@ def worker_exct(rank, n_parallel, master_rank, sync, sync_scat):
     if not gpu_comm:
         return  # (exit quietly)
 
-    scatterer = Scatterer(sync_scat, n_parallel, rank)
+    scatterer = WorkerScatterer(sync_scat, n_parallel, rank)
     accumulators = Accumulators()
     Function.master_rank = master_rank
 
