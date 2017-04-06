@@ -11,11 +11,6 @@ def make_avg_f(var):
     return theano.function([x, y], z.transfer(None), name='avg')
 
 
-# def make_shared_avg_f(var):
-#     y = T.scalar('avg_fact', dtype=var.dtype)
-#     return theano.function([y], updates=[(var, var * y)])
-
-
 def make_accum_f(var, mode):
     dtype = var.dtype
     bcast = var.broadcastable
@@ -104,5 +99,5 @@ class Accumulators(object):
 
         return avg_f
 
-    # def get_shared_avg_f(self, var):
-    #     return make_shared_avg_f(var)
+
+accumulators = Accumulators()

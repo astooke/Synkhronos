@@ -3,12 +3,10 @@ Classes and functions used by master but which don't MODIFY globals.
 (Might still read from globals passed explicitly as parameter.)
 """
 
-import numpy as np
-import multiprocessing as mp
-from ctypes import c_bool
 
-from .common import GPU_REDUCE, CPU_REDUCE, COLLECT_MODES, REDUCE_OPS, REDUCE_NO_OP
-from .variables import BaseData
+import multiprocessing as mp
+
+
 from .cpu_comm import CpuCommMaster
 
 
@@ -57,62 +55,6 @@ def get_n_gpu(n_gpu, master_rank):
     return n_gpu
 
 
-def build_sync(n_parallel, n_in_out, n_shared, max_dim):
-
-    mgr = mp.Manager()
-    dictionary = mgr.dict()
-    init = struct(
-        dict=dictionary,
-        semaphore=mp.Semaphore(0),
-        barriers=[mp.Barrier(n_parallel) for _ in range(3)],
-    )
-    dist = struct(
-        barrier=mp.Barrier(n_parallel - 1),
-    )
-    exct = struct(
-        quit=mp.RawValue(c_bool, False),
-        ID=mp.RawValue('i', 0),
-        sub_ID=mp.RawValue('i', 0),
-        barrier_in=mp.Barrier(n_parallel),
-        barrier_out=mp.Barrier(n_parallel),
-        workers_OK=mp.Value(c_bool, True)  # (not Raw)
-    )
-    comm = struct(
-        op=mp.RawValue('i', 0),
-        n_shared=mp.RawValue('i', 0),
-        vars=mp.RawArray('I', n_shared),
-        datas=mp.RawArray('I', n_in_out),
-    )
-    data = struct(
-        ID=mp.RawValue('i', 0),
-        dtype=mp.RawValue('i', 0),  # (by ID)
-        ndim=mp.RawValue('i', 0),
-        shape=np.ctypeslib.as_array(mp.RawArray('l', max_dim)),
-        tag=mp.RawValue('i', 0),
-        scatter=mp.RawValue(c_bool, True),
-        alloc_size=mp.RawValue('l', 0),
-    )
-    func = struct(
-        output_subset=mp.RawArray(c_bool, [True] * n_in_out),
-        collect_modes=mp.RawArray('B', n_in_out),
-        reduce_ops=mp.RawArray('B', n_in_out),
-        n_slices=mp.RawValue('i', 0),
-        new_collect=mp.RawValue(c_bool, True),
-    )
-    sync = struct(
-        init=init,
-        dist=dist,
-        exct=exct,
-        comm=comm,
-        data=data,
-        func=func,
-    )
-    return sync
-
-
-
-
-
 def init_cpu_comm(n_parallel, master_rank, sync_init):
     cpu_comm = CpuCommMaster(n_parallel)
     ports = list(cpu_comm.ports)
@@ -121,21 +63,6 @@ def init_cpu_comm(n_parallel, master_rank, sync_init):
     for _ in range(n_parallel - 1):
         sync_init.semaphore.release()
     return cpu_comm
-
-
-###############################################################################
-#                           GPU Collectives                                   #
-
-
-def get_op_and_avg(op):
-    _check_collect_reduce(op, REDUCE_OPS[:-1], "reduce operation")  # (disallow 'None')
-    op_ID = REDUCE_OPS.index(op)
-    if op == "avg":
-        op = "sum"
-        avg = True
-    else:
-        avg = False
-    return op, avg, op_ID
 
 
 ###############################################################################

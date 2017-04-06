@@ -2,10 +2,13 @@
 import numpy as np
 
 from .util import struct
+from .data import data, check_synk_inputs
+from . import exct
+from .scatterer import scatterer
+from .accumulators import accumulators
 
 
-COLLECT_MODES = ["avg", "sum", "prod", "min", "max", "gather",
-    "c_avg", "c_sum", "c_prod", "c_min", "c_max", "c_gather", None]
+sync = None
 
 
 ###############################################################################
@@ -17,13 +20,9 @@ COLLECT_MODES = ["avg", "sum", "prod", "min", "max", "gather",
 
 class BaseFunction(object):
 
-    _create = False
-    _n_parallel = None
-    _rank = None
-
     def __init__(self, ID, theano_function, sliced_function,
                  n_scatter, n_bcast, slc_shareds, update_vars,
-                 collect_modes, accumulators):
+                 collect_modes):
         self._ID = ID
         self._f = theano_function
         self._f.trust_input = True
@@ -41,10 +40,11 @@ class BaseFunction(object):
         self._full_output_set = list(range(self._n_output))
         self._current_output_set = self._full_output_set
         self._define_collect(collect_modes)
-        self._set_accum_fs(accumulators, collect_modes, sliced_function.outputs)
+        self._set_accum_fs(collect_modes, sliced_function.outputs)
 
     def _get_distro_info(self):
         info = dict(
+            ID=self._ID,
             theano_function=self._f,
             sliced_function=self._sliced_f if self._sliced_f is not self._f else None,
             n_scatter=self._n_scat,
@@ -64,11 +64,11 @@ class BaseFunction(object):
             avgs=["avg" in m for m in collect_modes],
         )
 
-    def _set_accum_fs(self, accumulators, collect_modes, outputs):
+    def _set_accum_fs(self, collect_modes, outputs):
         accum_fs = list()
         avg_fs = list()
         for mode, out in zip(collect_modes, outputs):
-            accum_fs.append(accumulators.get_accum_f, out.variable, mode)
+            accum_fs.append(accumulators.get_accum_f(out.variable, mode))
             if mode is None or "avg" not in mode:
                 avg_f = None
             else:
@@ -80,7 +80,7 @@ class BaseFunction(object):
     def get_shared(self):
         return self._f.get_shared()
 
-    def _run_function(self, scatterer, num_slices, output_subset):
+    def _run_function(self, num_slices, output_subset):
         my_inputs = scatterer.get_my_inputs(self._n_scat, self._n_bcast)
         my_results = \
             self._run_sliced_f(my_inputs, num_slices, output_subset) \
@@ -153,28 +153,27 @@ class BaseFunction(object):
 
 class WorkerFunction(BaseFunction):
 
-    _create = False
     master_rank = None
 
-    def __call__(self, sync_func, scatterer, gpu_comm, cpu_comm, accumulators):
+    def __call__(self, gpu_comm, cpu_comm):
         """
         1. Gather the right inputs from mp shared values.
         2. Execute local theano function on those inputs.
         3. Send results back to master.
         """
-        num_slices, output_subset = self.receive_f_info(sync_func, accumulators)
+        num_slices, output_subset = self.receive_f_info()
         if self._n_scat > 0:
             scatterer.check_idxs_alloc()
-        my_results = self._run_function(scatterer, num_slices, output_subset)
+        my_results = self._run_function(num_slices, output_subset)
         self.send_results(my_results, gpu_comm, cpu_comm)
 
-    def receive_f_info(self, sync_func, accumulators):
-        num_slices = sync_func.n_slices.value
+    def receive_f_info(self):
+        num_slices = sync.n_slices.value
         if self._n_output == 0:
             return num_slices, None
-        if sync_func.is_new_subset.value:
+        if sync.is_new_subset.value:
             o_set = [i for i in range(self._n_output)
-                if sync_func.output_subset[i]]
+                if sync.output_subset[i]]
             self._current_output_set = o_set
         output_subset = None \
             if len(self._current_output_set) == self._n_output else \
@@ -206,7 +205,6 @@ class WorkerFunction(BaseFunction):
 
 class FunctionHelpers(BaseFunction):
 
-    _create = True
     _inv_n = None
 
     def __init__(self, inputs, bcast_inputs, to_cpu, return_list=True,
@@ -215,9 +213,8 @@ class FunctionHelpers(BaseFunction):
         self._input_orderer = build_input_orderer(inputs + bcast_inputs)
         self._input_vars = inputs + bcast_inputs
         self._to_cpu = to_cpu
-        self._return_list = retun_list
+        self._return_list = return_list
         self._prev_output_subset = None
-
 
     @property
     def name(self):
@@ -248,18 +245,18 @@ class FunctionHelpers(BaseFunction):
             ordered_inputs[idx] = arg
         return tuple(ordered_inputs)
 
-    def _share_input_data(self, scatterer, synk_inputs, batch):
+    def _share_input_data(self, synk_inputs, batch):
         if self._n_input > 0:
             check_synk_inputs(synk_inputs, self._input_vars)
             scatterer.assign_inputs(synk_inputs, batch, self._n_scat)
         # TODO: handle batching for sliceable shared variables
 
-    def _update_f_info(self, sync_func, num_slices, output_subset):
+    def _update_f_info(self, num_slices, output_subset):
         if num_slices < 1 or int(num_slices) != num_slices:
             raise ValueError("Invalid number of slices: ", num_slices)
         if self._n_scat == 0 and not self._slc_shareds and num_slices > 1:
             raise ValueError("Requested num_slices > 1 but nothing to slice!")
-        sync_func.n_slices.value = int(num_slices)
+        sync.n_slices.value = int(num_slices)
         is_new_subset = output_subset != self._prev_output_subset
         if is_new_subset:
             if output_subset is None:
@@ -268,9 +265,9 @@ class FunctionHelpers(BaseFunction):
                 output_subset = check_output_subset(self._n_output, output_subset)
                 self._current_output_set = output_subset
             for i in range(self._n_output):
-                sync_func.output_subset[i] = i in self._current_output_set
+                sync.output_subset[i] = i in self._current_output_set
             self._prev_output_subset = output_subset
-        sync_func.is_new_subset.value = is_new_subset
+        sync.is_new_subset.value = is_new_subset
 
     def _collect_results(self, gpu_comm, cpu_comm, my_results):
         results = list()
@@ -297,21 +294,9 @@ class FunctionHelpers(BaseFunction):
 
 ###############################################################################
 #                                                                             #
-#                    For running Synk master Functions                        #
+#        For running or initializing Synk master Functions                    #
 #                                                                             #
 ###############################################################################
-
-
-def check_synk_inputs(synk_datas, vars):
-    for idx, (s_data, var) in enumerate(zip(synk_datas, vars)):
-        if not isinstance(s_data, BaseData):
-            raise TypeError("All function inputs must be of type SynkData.")
-        if s_data.dtype != var.dtype:
-            raise TypeError("Incorrect input dtype for position {}; expected: "
-                "{}, received: {}.".format(idx, var.dtype, s_data.dtype))
-        if s_data.ndim != var.ndim:
-            raise TypeError("Incorrect input dimensions for position {}; "
-                "expected: {}, received: {}.".format(idx, var.ndim, s_data.ndim))
 
 
 def check_output_subset(n_outputs, output_subset):
@@ -328,95 +313,6 @@ def check_output_subset(n_outputs, output_subset):
     return output_subset
 
 
-###############################################################################
-#                                                                             #
-#                 For building Synk Master Functions                          #
-#                                                                             #
-###############################################################################
-
-
-def process_outputs(outputs):
-    if outputs is None:
-        return [], [], []
-    output_vars = list()
-    output_modes = list()
-    from theano.gpuarray.type import GpuArrayVariable
-    len_err = ValueError("Output tuples must be length 2: (var, collect_mode).")
-    if isinstance(outputs, tuple):
-        if len(outputs) != 2: raise len_err
-        output_vars.append(outputs[0])
-        output_modes.append(outputs[1])
-    elif isinstance(outputs, list):
-        for o in outputs:
-            if isinstance(o, tuple):
-                if len(o) != 2: raise len_err
-                output_vars.append(o[0])
-                output_modes.append(o[1])
-            else:
-                output_vars.append(o)
-                output_modes.append("avg")  # (default)
-    else:
-        output_vars.append(o)
-        output_modes.append("avg")
-    check_collect_modes(output_modes)
-    to_cpu = [not isinstance(var, GpuArrayVariable) for var in output_vars]
-    gpu_vars = [var.transfer(None) for var in output_vars]
-    return gpu_vars, to_cpu, output_modes
-
-
-def process_updates(updates):
-    if updates is None:
-        return None, [], []
-    in_err = TypeError("Input 'updates' must be a list of tuples: "
-            "(var, new_value, [collect_mode])")
-    if not isinstance(updates, list): raise in_err
-    reg_updates = list()
-    update_vars = list()
-    update_gpu_outs = list()
-    update_modes = list()
-    for u in updates:
-        if not isinstance(u, tuple) or len(u) not in (2, 3): raise in_err
-        reg_updates.append((u[0], u[1]))
-        update_vars.append(u[0])
-        update_gpu_outs.append(u[1].transfer(None))
-        update_modes.append(u[2] if len(u) == 3 else "avg")
-    check_collect_modes(update_modes)
-    return reg_updates, update_vars, update_gpu_outs, update_modes
-
-
-def process_givens(givens, sliced_shareds):
-    if sliced_shareds is None:
-        return givens, None, [], []
-    import theano.tensor as T
-    giv_err = TypeError("If using 'sliced_shareds', givens must be list of 2-tuples.")
-    s_err = TypeError("Input 'sliced_shareds' must be list, elements are "
-        "individual shared variables or 2-tuples: (var, given_var)")
-    givens = list() if givens is None else givens
-    if not isinstance(givens, list):
-        raise giv_err
-    for g in givens:
-        if not isinstance(g, tuple) or len(g) != 2:
-            raise giv_err
-    if not isinstance(sliced_shareds, list): raise s_err
-    start = T.lscalar()
-    end = T.lscalar()
-    slc_givens = list()
-    slc_shareds = list()
-    for ss in sliced_shareds:
-        if isinstance(ss, tuple):
-            if len(ss) != 2: raise s_err
-            givens.append(ss)
-            slc_givens.append((ss[0], ss[1][start:end]))
-            slc_shareds.append(ss[1])
-        else:
-            slc_givens.append((ss, ss[start:end]))
-            slc_shareds.append(ss)
-    givens = None if len(givens) == 0 else givens
-    slc_givens = None if len(sliced_shareds) == 0 else givens
-    slc_idx_inputs = [] if slc_givens is None else [start, end]
-    return givens, slc_givens, slc_idx_inputs, slc_shareds
-
-
 def build_input_orderer(inputs):
     input_orderer = dict()
     for idx, var in enumerate(inputs):
@@ -426,7 +322,97 @@ def build_input_orderer(inputs):
     return input_orderer
 
 
-def check_collect_modes(collect_modes):
-    if any([mode not in COLLECT_MODES for mode in collect_modes]):
-        raise ValueError("Had an invalid collect mode in: \n{}"
-            "\n\tpossible modes are: \n{}".format(collect_modes, COLLECT_MODES))
+###############################################################################
+#                                                                             #
+#                   API for (Master) Functions                                #
+#                                                                             #
+###############################################################################
+
+
+class Function(FunctionHelpers):
+    """ Class of instances returned by ``synkhronos.function()``.  """
+
+    def __call__(self, *args, output_subset=None, batch=None, num_slices=1,
+                 **kwargs):
+        """ Callable as in Theano function.
+
+        When called, Synkhronos functions:
+
+            1. Share input data,
+            2. Signal to workers to start and what to do,
+            3. Call the local theano function on assigned data subset,
+            4. Collect results from workers and return it.
+
+        Theano function keyword argument ``output_subset`` is supported.
+
+        Args:
+            *args (data): Normal data inputs to Theano function
+            **kwargs (data): Normal data inputs to Theano function
+
+        Raises:
+            RuntimeError: If not distributed or if synkhronos closed.
+        """
+        exct.check_active()
+        ordered_inputs = self._order_inputs(args, kwargs)
+        self._share_input_data(ordered_inputs, batch)
+        self._update_f_info(num_slices, output_subset)
+        exct.launch(exct.FUNCTION, self._ID)
+        my_results = self._run_function(num_slices, output_subset)
+        outputs = self._collect_results(g.gpu_comm, g.cpu_comm, my_results)
+        exct.join()
+        if not self._return_list and len(outputs) == 1:
+            outputs = outputs[0]
+        return outputs
+
+    def as_theano(self, *args, **kwargs):
+        """Call the function in the master process only, as normal Theano.
+
+        This method will return outputs to the CPU if they were originally
+        requested there, unlike using ``function.theano_function()``, which is
+        built to hold all outputs on the GPU.
+
+        Args:
+            *args (data): Normal data inputs to the Theano function
+            **kwargs (data): Normal data inputs to the Theano function
+        """
+        # FIXME:  possibly out of date.
+        results = self._f(*args, **kwargs)
+        if not isinstance(results, list):
+            results = [results]
+        o_subset = kwargs.pop("output_subset", None)
+        output_set = range(self._n_output) if o_subset is None else o_subset
+        for idx_r, idx_o in enumerate(output_set):
+            if self._outputs.to_cpu[idx_o]:
+                results[idx_r] = np.asarray(results[idx_r])
+        if len(results) == 1:
+            results = results[0]
+        return results
+
+    def build_inputs(self, *args, **kwargs):
+        """ convenience method which internally calls synkhronos.data() for
+        each input variable associated with this function; provide data inputs
+        as if calling the Theano function.
+        # TODO: move force_cast and oversize to function signature?
+        """
+        # FIXME: possibly out of date
+        force_cast = kwargs.pop("force_cast", False)
+        oversize = kwargs.pop("oversize", 1)
+        scatter = kwargs.pop("scatter", True)
+        inputs = self._order_inputs(args, kwargs)
+        if not isinstance(scatter, (list, tuple)):
+            scatter = [scatter] * self._n_input
+        elif len(scatter) != self._n_input:
+            raise ValueError("Scatter must be single boolean or list/tuple of "
+                "length equal to the number of inputs.")
+        synk_datas = list()
+        for var, inpt, scat in zip(self._input.vars, inputs, scatter):
+            synk_data = data(value=inpt,
+                             dtype=var.dtype,
+                             scatter=scat,
+                             force_cast=force_cast,
+                             oversize=oversize,
+                             )
+            synk_datas.append(synk_data)
+        return tuple(synk_datas)
+
+
