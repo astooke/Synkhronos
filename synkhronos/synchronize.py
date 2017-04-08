@@ -11,10 +11,10 @@ def build_syncs(n_parallel, max_n_var=100, max_dim=16):
 
     mgr = mp.Manager()
     dictionary = mgr.dict()
-    init = struct(
+    comm = struct(
         dict=dictionary,
         semaphore=mp.Semaphore(0),
-        barriers=[mp.Barrier(n_parallel) for _ in range(3)],
+        barrier=mp.Barrier(n_parallel),
     )
     dist = struct(
         barrier=mp.Barrier(n_parallel - 1),
@@ -58,7 +58,7 @@ def build_syncs(n_parallel, max_n_var=100, max_dim=16):
     )
 
     syncs = struct(
-        init=init,
+        comm=comm,
         dist=dist,
         exct=exct,
         coll=coll,
@@ -70,12 +70,14 @@ def build_syncs(n_parallel, max_n_var=100, max_dim=16):
 
 
 def give_syncs(syncs):
+    from . import comm
     from . import exct
     from . import collectives as coll
     from . import data
     from . import function as func
     from . import scatterer as scat
 
+    comm.sync = syncs.comm
     exct.sync = syncs.exct
     coll.sync = syncs.coll
     data.sync = syncs.data

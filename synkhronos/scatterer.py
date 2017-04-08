@@ -24,7 +24,7 @@ class Scatterer(object):
         self.synk_datas = list()
         self.tag = -1
 
-    def init_parallel(self, n_parallel, rank, create):
+    def assign_rank(self, n_parallel, rank, create):
         self.n_parallel = n_parallel
         self.rank = rank
         self.create = create

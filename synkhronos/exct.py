@@ -41,12 +41,12 @@ sync = None  # Will be assigned back by master.
 processes = list()
 
 
-def fork(target, n_parallel, master_rank, syncs):
-    # TODO build syncs in here?
+def fork(target, n_parallel, master_rank, *args, **kwargs):
     for rank in [r for r in range(n_parallel) if r != master_rank]:
-        args = (rank, n_parallel, master_rank, syncs)
-        processes.append(mp.Process(target=target, args=args))
+        w_args = (rank, n_parallel, master_rank, *args)
+        processes.append(mp.Process(target=target, args=w_args, kwargs=kwargs))
     for p in processes: p.start()
+    state.forked = True
     atexit.register(close)
 
 
@@ -76,3 +76,11 @@ def close():
             pass
         state.closed = True
         for p in processes: p.join()
+
+
+def worker_error_close():
+    sync.workers_OK.value = False
+    try:
+        sync.barrier_out.wait(1)
+    except BrokenBarrierError:
+        pass

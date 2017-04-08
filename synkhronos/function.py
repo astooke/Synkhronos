@@ -6,6 +6,7 @@ from .data import data, check_synk_inputs
 from . import exct
 from .scatterer import scatterer
 from .accumulators import accumulators
+from .comm import comm_worker, comm_master
 
 
 sync = None
@@ -59,7 +60,7 @@ class BaseFunction(object):
         bare_ops = [m.lstrip("c_") for m in collect_modes]
         self._collect = struct(
             modes=collect_modes,
-            gpu=[b == m and b is not None for b, m in zip(bare_ops, collect_modes)],
+            nccl=[b == m and b is not None for b, m in zip(bare_ops, collect_modes)],
             ops=bare_ops,
             avgs=["avg" in m for m in collect_modes],
         )
@@ -155,7 +156,7 @@ class WorkerFunction(BaseFunction):
 
     master_rank = None
 
-    def __call__(self, gpu_comm, cpu_comm):
+    def __call__(self):
         """
         1. Gather the right inputs from mp shared values.
         2. Execute local theano function on those inputs.
@@ -165,7 +166,7 @@ class WorkerFunction(BaseFunction):
         if self._n_scat > 0:
             scatterer.check_idxs_alloc()
         my_results = self._run_function(num_slices, output_subset)
-        self.send_results(my_results, gpu_comm, cpu_comm)
+        self.send_results(my_results)
 
     def receive_f_info(self):
         num_slices = sync.n_slices.value
@@ -180,20 +181,11 @@ class WorkerFunction(BaseFunction):
             self._current_output_set
         return num_slices, output_subset
 
-    def send_results(self, my_results, gpu_comm, cpu_comm):
+    def send_results(self, my_results):
         for i, r in zip(self._current_output_set, my_results):
-            gpu = self._collect.gpu[i]
+            nccl = self._collect.nccl[i]
             op = self._collect.ops[i]
-            if op is None:
-                pass
-            elif gpu:
-                if op == "gather":
-                    gpu_comm.all_gather(r)
-                else:
-                    # NOTE: the dest=r kwarg only needed for NCCL bug.
-                    gpu_comm.reduce(r, op=op, root=self.master_rank, dest=r)
-            else:
-                cpu_comm.send(r)
+            comm_worker.send(r, op, nccl)
 
 
 ###############################################################################
@@ -269,23 +261,12 @@ class FunctionHelpers(BaseFunction):
             self._prev_output_subset = output_subset
         sync.is_new_subset.value = is_new_subset
 
-    def _collect_results(self, gpu_comm, cpu_comm, my_results):
+    def _collect_results(self, my_results):
         results = list()
-        for i, r in zip(self._current_output_set, my_results):
-            gpu = self._collect.gpu[i]
-            op = self._collect.ops[i]
-            if op is None:
-                pass
-            elif gpu:
-                r = gpu_comm.all_gather(r) if op == "gather" else \
-                    gpu_comm.reduce(r, op=op, dest=r)
-            else:
-                r = cpu_comm.gather(r) if op == "gather" else \
-                    cpu_comm.reduce(r, op=op, dest=r)
-            results.append(r)
-        for i, o in enumerate(self._current_output_set):
-            if self._collect.avgs[o]:
-                results[i] = self._avg_fs[o](results[i], self._inv_n)
+        for o, r in zip(self._current_output_set, my_results):
+            nccl = self._collect.nccl[o]
+            op = self._collect.ops[o]
+            results.append(comm_master.collect(r, op, nccl))
         for i, o in enumerate(self._current_output_set):
             if self._to_cpu[o]:
                 results[i] = np.asarray(results[i])
@@ -358,7 +339,7 @@ class Function(FunctionHelpers):
         self._update_f_info(num_slices, output_subset)
         exct.launch(exct.FUNCTION, self._ID)
         my_results = self._run_function(num_slices, output_subset)
-        outputs = self._collect_results(g.gpu_comm, g.cpu_comm, my_results)
+        outputs = self._collect_results(my_results)
         exct.join()
         if not self._return_list and len(outputs) == 1:
             outputs = outputs[0]

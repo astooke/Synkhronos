@@ -4,6 +4,7 @@ import numpy as np
 from .scatterer import scatterer
 from .data import Data
 
+
 ###############################################################################
 #                                                                             #
 #                       API for building Synk Data                            #

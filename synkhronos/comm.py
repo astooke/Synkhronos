@@ -2,10 +2,25 @@
 import zmq
 import numpy as np
 
+sync = None
+
+
+###############################################################################
+#                                                                             #
+#                          CPU Comm (using ZeroMQ)                            #
+#                                                                             #
+###############################################################################
+
 
 class CpuCommMaster(object):
 
-    def __init__(self, n_parallel, min_port=1024, max_port=65535):
+    def __init__(self):
+        self.context = None
+        self.sockets = None
+        self.ports = None
+        self.n = None
+
+    def connect(self, n_parallel, master_rank, min_port=1024, max_port=65535):
         context = zmq.Context()
         sockets = list()
         ports = list()
@@ -15,6 +30,11 @@ class CpuCommMaster(object):
                 "tcp://*", min_port=min_port, max_port=max_port)
             sockets.append(socket)
             ports.append(port)
+        ports_send = list(ports)
+        ports_send.append(ports[master_rank])  # (last worker gets this one)
+        sync.dict["ports"] = ports_send
+        for _ in range(n_parallel - 1):
+            sync.semaphore.release()  # (let the workers connect)
         self.context = context
         self.sockets = sockets
         self.ports = ports
@@ -51,7 +71,7 @@ class CpuCommMaster(object):
     def gather(self, arr, nd_up=1):
         if nd_up > 1:
             raise NotImplementedError
-        arrs = list(np.asarray(arr))
+        arrs = [np.asarray(arr))]
         for socket in self.sockets:
             arrs.append(recv_nd_array(socket))
         if nd_up == 1:
@@ -77,11 +97,21 @@ class CpuCommMaster(object):
         return arr[:n]
 
 
+cpu_comm_master = CpuCommMaster()
+
+
 class CpuCommWorker(object):
 
-    def __init__(self, port):
+    def __init__(self):
+        self.context = None
+        self.socket = None
+        self.port = None
+
+    def connect(self, rank):
         context = zmq.Context()
         socket = context.socket(zmq.PAIR)
+        sync.semaphore.acquire()
+        port = sync.dict["ports"][rank]
         socket.connect("tcp://localhost:%s" % port)
         self.context = context
         self.socket = socket
@@ -96,6 +126,9 @@ class CpuCommWorker(object):
     def send_recv(self, arr):  # (all_reduce, all_gather)
         send_nd_array(self.socket, np.asarray(arr))
         return recv_nd_array(self.socket)
+
+
+cpu_comm_worker = CpuCommWorker()
 
 
 def send_nd_array(socket, arr):
@@ -113,3 +146,56 @@ def recv_nd_array(socket, expected_arr=None):
         assert expected_arr.shape == shape
     arr = socket.recv(copy=False)
     return np.frombuffer(arr, dtype=dtype).reshape(shape)
+
+
+###############################################################################
+#                                                                             #
+#                          GPU Comm (using NCCL)                              #
+#                                                                             #
+###############################################################################
+
+
+def build_gpu_comm():
+
+    try:
+        from pygpu import collectives as gpu_coll
+    except ImportError as exc:
+        return None
+
+    class GpuComm(gpu_coll.GpuComm):
+
+        def __init__(self):
+            self.master_rank = None
+
+        def connect(self, n_gpu, rank, master_rank):
+            import theano
+            import theano.gpuarray
+            gpu_ctx = theano.gpuarray.get_context(None)
+            clique_id = gpu_coll.GpuCommCliqueId(gpu_ctx)
+            if rank == master_rank:
+                sync.dict["gpu_comm_id"] = clique_id.comm_id
+                sync.barrier.wait()
+            else:
+                sync.barrier.wait()
+                clique_id.comm_id = sync.dict["gpu_comm_id"]
+            super().__init__(clique_id, n_gpu, rank)
+            self.master_rank = master_rank
+
+        def broadcast(self, array):
+            super().broadcast(array=array, root=self.master_rank)
+
+        def reduce(self, src, op, dest=None):
+            op = "sum" if op == "avg" else op
+            super().reduce(src=src, op=op, dest=dest, root=self.master_rank)
+
+        def all_reduce(self, src, op, dest):
+            op = "sum" if op == "avg" else op
+            super().all_reduce(src=src, op=op, dest=dest)
+
+
+
+
+    return GpuComm()
+
+
+gpu_comm = build_gpu_comm()

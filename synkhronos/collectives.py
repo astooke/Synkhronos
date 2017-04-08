@@ -1,6 +1,8 @@
 
 from .data import check_synk_inputs
 from .scatterer import scatterer
+# TODO: from .comm import cpu_comm_master
+from .comm import cpu_comm_master, gpu_comm
 from . import exct
 
 __all__ = ["broadcast", "gather", "reduce", "all_reduce", "all_gather", "scatter"]
@@ -45,7 +47,7 @@ def broadcast(shared_vars):
     exct.launch(exct.GPU_COMM, exct.GPU_BROADCAST)
     for shared_ID in shared_IDs:
         src = shareds_registry.get_array(shared_ID)
-        g.gpu_comm.broadcast(src)
+        gpu_comm.broadcast(src=src)
     exct.join()
 
 
@@ -74,7 +76,7 @@ def gather(shared_vars, dest=None, nd_up=None):
     results = list()
     for shared_ID in shared_IDs:
         src = shareds_registry.get_array(shared_ID)
-        r = g.gpu_comm.all_gather(src, dest=dest, nd_up=nd_up)
+        r = gpu_comm.all_gather(src=src, dest=dest, nd_up=nd_up)
         results.append(r)
     exct.join()
     if dest is None:
@@ -113,7 +115,7 @@ def reduce(shared_vars, op="avg", in_place=True, dest=None):
     for shared_ID in shared_IDs:
         src = shareds_registry.get_array(shared_ID)
         dest = src if dest is None and in_place else dest
-        results.append(g.gpu_comm.reduce(src, op, dest))
+        results.append(gpu_comm.reduce(src=src, op=op, dest=dest))
     if avg:
         shareds_registry.call_avg_fs(shared_IDs)
     exct.join()
@@ -134,7 +136,7 @@ def all_reduce(shared_vars, op="avg"):
     exct.launch(exct.GPU_COMM, exct.GPU_ALL_REDUCE)
     for shared_ID in shared_IDs:
         src = shareds_registry.get_array(shared_ID)
-        g.gpu_comm.all_reduce(src, op, src)
+        gpu_comm.all_reduce(src=src, op=op, dest=src)
     if avg:
         shareds_registry.call_avg_fs(shared_IDs)
     exct.join()
@@ -155,7 +157,7 @@ def all_gather(source, dest):
     exct.launch(exct.GPU_COMM, exct.GPU_ALL_GATHER)
     src = shareds_registry.get_array(shared_IDs[0])
     dest = shareds_registry.get_array(shared_IDs[1])
-    g.gpu_comm.all_gather(src, dest)
+    gpu_comm.all_gather(src=src, dest=dest)
     exct.join()
 
 

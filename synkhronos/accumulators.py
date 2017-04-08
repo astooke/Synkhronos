@@ -2,12 +2,14 @@
 import theano
 import theano.tensor as T
 
+# TODO:  Use inplace operators for all of these.
+
 
 def make_avg_f(var):
     y = T.scalar('avg_fact', dtype=var.dtype)
     t_type = T.TensorType(dtype=var.dtype, broadcastable=var.broadcastable)
     x = t_type('accum').transfer(None)
-    z = x * y
+    z = x * y  # * (1 / y)
     return theano.function([x, y], z.transfer(None), name='avg')
 
 
