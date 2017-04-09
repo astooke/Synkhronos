@@ -28,6 +28,7 @@ def build_syncs(n_parallel, max_n_var=100, max_dim=16):
         workers_OK=mp.Value(c_bool, True)  # (not Raw)
     )
     coll = struct(
+        nccl=mp.RawValue(c_bool, True),
         op=mp.RawArray('c', 4),
         n_shared=mp.RawValue('i', 0),
         vars=mp.RawArray('i', max_n_var),

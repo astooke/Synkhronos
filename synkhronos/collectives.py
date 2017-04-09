@@ -1,9 +1,13 @@
 
-from .data import check_synk_inputs
+from pygpu.gpuarray import GpuArray
+from numpy import ndarray
+
+from .data import check_synk_inputs, Data
 from .scatterer import scatterer
 # TODO: from .comm import cpu_comm_master
-from .comm import cpu_comm_master, gpu_comm
+from .comm_manager import comm
 from . import exct
+
 
 __all__ = ["broadcast", "gather", "reduce", "all_reduce", "all_gather", "scatter"]
 
@@ -17,58 +21,65 @@ sync = None  # (assigned later by master)
 ###############################################################################
 
 
-def coll_prep(g_shareds, shared_vars, op=None):
+def coll_prep(shared_vars, sources=None, op=None, nccl=True):
     exct.check_active()
+    if sources is not None:
+        if isinstance(shared_vars, (list, tuple)):
+            if not isinstance(sources, (list, tuple)) or len(sources) != len(shared_vars):
+                raise TypeError("Arg 'shared_vars' and optional arg 'sources' "
+                    "must both be individal entries or lists/tuples of same "
+                    "length.")
+        elif isinstance(sources, (list, tuple)):
+            raise TypeError("Arg 'shared_vars' and optional arg 'sources' "
+                "must both be individal entries or lists/tuples of same "
+                "length.")
     shared_IDs = g_shareds.get_IDs(shared_vars)
+    if sources is None:
+        sources = [shareds_registry.get_array(i) for i in shared_IDs]
+    elif not isinstance(sources, (list, tuple)):
+        sources = [sources]
+    src_types = [type(d) for d in sources]
+    src_type = src_types[0]
+    if src_types.count(src_type) != len(src_types):
+        raise TypeError("All broadcast data sources must be same type.")
+    if src_type not in (GpuArray, ndarray, Data):
+        raise TypeError("Broadcast data source must be type "
+            "pygpu.GpuArray, numpy.ndarray, or synkhronos.Data")
     n_shared = len(shared_IDs)
+    sync.nccl.value = nccl
+    sync.src_type.value = SOURCE_TYPES[src_type]
     sync.n_shared.value = n_shared
     sync.vars[:n_shared] = shared_IDs
+    if src_type is Data:
+        sync.sources[:n_shared] = [synk_data.ID for synk_data in sources]
     if op is not None:
         sync.op.value = bytes(op, encoding='utf-8')
-    return shared_IDs
+    return shared_IDs, sources, src_type
 
 
 ###############################################################################
 #                       User functions                                        #
 
 
-def broadcast(shared_vars):
-    """GPU-comm: broadcast values from master to workers.
-
-    In all multi-variable GPU-comm functions, the default behavior if no
-    variables and no functions are provided is to call the operation on all
-    shared variables in the session.
-
-    Args:
-        shared_vars (None, optional): names or vars to be broadcast
-        functions (None, optional): functions to have all shared vars broadcast
-    """
-    shared_IDs = coll_prep(shareds_registry, shared_vars)
-    exct.launch(exct.GPU_COMM, exct.GPU_BROADCAST)
-    for shared_ID in shared_IDs:
-        src = shareds_registry.get_array(shared_ID)
-        gpu_comm.broadcast(src=src)
+def broadcast(shared_vars, datas=None, nccl=True):
+    shared_IDs, sources, src_type = coll_prep(shared_vars, datas)
+    if src_type is GpuArray and nccl:
+        exct_ID = exct.GPU_COMM
+    elif src_type is Data:
+        exct_ID = exct.SYNK_COMM
+    else:
+        exct_ID = exct.CPU_COMM
+    exct.launch(exct_ID, exct.BROADCAST)
+    if src_type is not Data:
+        for src in sources:
+            comm.broadcast(src, nccl)
+    if datas is not None:
+        for src, var in zip(sources, shared_vars):
+            var.set_value(src)
     exct.join()
 
 
 def gather(shared_vars, dest=None, nd_up=None):
-    """GPU-comm: gather values from workers into master.
-
-    (Calls all_gather, but results are ignored in workers--can't have new shared
-    variables in them.)
-
-    Args:
-        shared_vars (None, optional): names or vars to gather
-        functions (None, optional): functions to have all shared vars gathered
-        dest (None, optional): GPU-array to write result (only if one var)
-        nd_up (None, optional): Number of additional dimensions in result
-
-    Raises:
-        ValueError: Description
-
-    Returns:
-        List of GPUArrays, if no destination provided.
-    """
     shared_IDs = coll_prep(shareds_registry, shared_vars)
     if len(shared_IDs) > 1 and dest is not None:
         raise ValueError("When specifying destination, can only gather one var.")

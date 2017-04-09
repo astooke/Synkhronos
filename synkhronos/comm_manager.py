@@ -26,7 +26,7 @@ class Comm(object):
             self.gpu_coll_imported = False
 
     def connect_as_master(self, n_parallel, rank, master_rank, use_gpu,
-                min_port=1024, max_port=65535):
+                          min_port=1024, max_port=65535):
         self.cpu = CpuCommMaster()
         self.cpu.connect(n_parallel, master_rank, min_port, max_port)
         if use_gpu and self.gpu_coll_imported:
@@ -346,13 +346,13 @@ class GpuCommWorker(GpuComm):
     #                   Support for Shared Variable Collectives               #
 
     def broadcast(self, arr):
-        self.comm.broadcast(src=arr, root=self.master_rank)
+        self.comm.broadcast(array=arr, root=self.master_rank)
 
     def gather(self, arr, nd_up=1):
         self.comm.all_gather(src=arr, nd_up=1)
 
-    def all_gather(self, arr, dest, nd_up=1):
-        self.comm.all_gather(src=arr, dest=dest, nd_up=1)
+    def all_gather(self, arr, dest):
+        return self.comm.all_gather(src=arr, dest=dest, nd_up=0)  # FIXME
 
     def reduce(self, arr, op):
         op = "sum" if op == "avg" else op
