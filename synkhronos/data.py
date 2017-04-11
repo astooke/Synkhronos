@@ -3,7 +3,7 @@ import numpy as np
 
 from . import exct
 from .shmemarray import ShmemRawArray, NP_TO_C_TYPE
-from .common import PRE
+from .util import PREFIX
 
 
 sync = None
@@ -33,7 +33,7 @@ class BaseData(object):
         self._alloc_size = 0
 
     def _alloc_shmem(self, size, tag):
-        tag = PRE + "_data_" + str(self._ID) + "_" + str(tag)
+        tag = PREFIX + "_data_" + str(self._ID) + "_" + str(tag)
         self._shmem = ShmemRawArray(self._ctype, size, tag, self._create)
         self._np_shmem = np.ctypeslib.as_array(self._shmem)
         self._alloc_size = size
@@ -85,7 +85,7 @@ class DataHelpers(BaseData):
         super().__init__(ID, dtype, ndim)
         sync.dtype.value = bytes(self._dtype, encoding='utf-8')
         sync.ndim.value = self._data.ndim
-        exct.launch(exct.DATA, exct.DATA_CREATE)
+        exct.launch(exct.DATA, exct.CREATE)
         self._minibatch = minibatch
         self._name = name
         exct.join()
@@ -108,14 +108,14 @@ class DataHelpers(BaseData):
         sync.tag.value = self._tag
         sync.ID.value = self._ID
         sync.shape[:self.ndim] = shape
-        exct.launch(exct.Data, exct.DATA_ALLOC)
+        exct.launch(exct.Data, exct.ALLOC)
         self._shape_data(shape)
         exct.join()
 
     def _shape_and_signal(self, shape):
         sync.ID.value = self._ID
         sync.shape[:self.ndim] = shape
-        exct.launch(exct.DATA, exct.DATA_RESHAPE)
+        exct.launch(exct.DATA, exct.RESHAPE)
         self._shape_data(shape)
         exct.join()
 
@@ -240,6 +240,5 @@ class Data(DataHelpers):
         (only way to shrink alloc_size) """
         self._free_shmem()
         sync.ID.value = self._ID
-        exct.launch(exct.DATA, exct.DATA_FREE)
+        exct.launch(exct.DATA, exct.FREE)
         exct.join()
-

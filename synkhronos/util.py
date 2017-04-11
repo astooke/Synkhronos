@@ -3,17 +3,21 @@ Classes and functions used by master but which don't MODIFY globals.
 (Might still read from globals passed explicitly as parameter.)
 """
 
+import os
+
+import inspect
+import synkhronos
+PKL_PATH = inspect.getfile(synkhronos).rsplit("__init__.py")[0] + "pkl/"
+PID = str(os.getpid())
+PKL_FILE = PKL_PATH + "synk_f_dump_" + PID + ".pkl"
+PREFIX = "/synk_" + PID
+
 
 class struct(dict):
 
     def __init__(self, **kwargs):
         dict.__init__(self, kwargs)
         self.__dict__ = self
-
-
-def init_gpu(rank):
-    import theano.gpuarray
-    theano.gpuarray.use("cuda" + str(rank))
 
 
 def init_cpu(rank):
@@ -51,4 +55,3 @@ def make_slices(data_collection):
     for i in range(len(data_collection)):
         slices.append(slice(endings[i], endings[i + 1]))
     return tuple(slices)
-

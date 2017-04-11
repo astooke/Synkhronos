@@ -2,11 +2,12 @@
 import theano
 import pickle
 
-from .function import Function
+from .function import Function, WorkerFunction
 from .collectives import shareds_registry
 from . import exct
-from .common import PKL_FILE
+from .util import PKL_FILE
 
+sync = None
 
 synk_functions = list()
 
@@ -21,40 +22,6 @@ synk_functions = list()
 def function(inputs, outputs=None, bcast_inputs=None, updates=None,
              givens=None, sliceable_shareds=None,
              **kwargs):
-    """
-    Use when creating a Theano function instead of ``theano.function``.
-
-    ``collect_modes`` and ``reduce_ops`` can be single strings or lists which
-    determine how each output is handled.  ``[None]`` is a valid entry, which
-    results in no communication from workers to master.  (In the future, this
-    will only be the default behavior for the function, but will be possible to
-    overrule when calling.)
-
-    All inputs are scattered evenly along the `0-th` dimension.  (Use a Theano
-    shared variable for a broadcasted input.)
-
-    Inputs and outputs need not be variables transferred to the GPU by the user.
-    Internally, synkhronos will apply these transfers so that all outputs remain
-    on their respective worker GPU, so that data is collected to the master GPU
-    via GPU-comms.  In the end, the outputs will be returned to the CPU in the
-    master process only.  If the user provides any outputs already appended
-    with a transfer to remain on the GPU, they will be left there in the master.
-
-    Args:
-        inputs (var): as ``inputs`` in ``theano.function()``
-        outputs (None, optional): as ``outputs`` in ``theano.function()``
-        collect_modes (str, list, optional): default behaviors;
-            "gather" or "reduce"
-        reduce_ops (str, list, optional): default behaviors;
-            "sum", "prod", "min", "max", "avg"
-        **kwargs (TYPE): passed directly to ``theano.function()``
-
-    Raises:
-        RuntimeError: If not yet forked or if already distributed.
-
-    Returns:
-        Synkhronos.Function: Callable like a Theano function.
-    """
     if not exct.state.forked:
         raise RuntimeError("Must fork before making functions for GPU.")
     if exct.state.distributed:
@@ -234,3 +201,27 @@ def check_collect_modes(collect_modes):
     if any([mode not in COLLECT_MODES for mode in collect_modes]):
         raise ValueError("Had an invalid collect mode in: \n{}"
             "\n\tpossible modes are: \n{}".format(collect_modes, COLLECT_MODES))
+
+
+###############################################################################
+#                                                                             #
+#                           Worker Tasks                                      #
+#                                                                             #
+###############################################################################
+
+
+def receive_distribution():
+    with open(PKL_FILE, "rb") as f:
+        distribution = pickle.load(f)
+    if sync.barrier.wait() == 0:  # (only one worker does it)
+        import os
+        os.remove(PKL_FILE)  # (leave no trace)
+    synk_funcs = list()
+    shareds_registry.reset()
+    for i, f_info in enumerate(distribution):
+        if f_info["sliced_function"] is None:  # (avoided duplicate pickling)
+            f_info["sliced_function"] = f_info["theano_function"]
+        assert f_info["ID"] == i
+        synk_funcs.append(WorkerFunction(**f_info))
+        shareds_registry.register_func(f_info["theano_function"])
+    return synk_functions

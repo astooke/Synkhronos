@@ -2,8 +2,6 @@
 import theano
 import theano.tensor as T
 
-# TODO:  Use inplace operators for all of these.
-
 
 def make_avg_f(var):
     y = T.scalar('avg_fact', dtype=var.dtype)
@@ -13,7 +11,7 @@ def make_avg_f(var):
     return theano.function([x, y], z.transfer(None), name='avg')
 
 
-def make_accum_f(var, mode):
+def make_reduce_f(var, mode):
     dtype = var.dtype
     bcast = var.broadcastable
     t_type = T.TensorType(dtype=dtype, broadcastable=bcast)
@@ -37,13 +35,13 @@ def broadcastable_string(broadcastable):
     return bcast
 
 
-class Accumulators(object):
+class Reducers(object):
 
     def __init__(self):
-        self.accum_fs = dict()  # functions cached in nested dictionaries
+        self.reduce_fs = dict()  # functions cached in nested dictionaries
         self.avg_fs = dict()
 
-    def get_accum_f(self, var, mode):
+    def get_reduce_f(self, var, mode):
 
         if mode is None:
             return lambda x, y: y
@@ -56,7 +54,7 @@ class Accumulators(object):
         bcast = broadcastable_string(var.broadcastable)
 
         # Try to find existing function.
-        this_mode = self.accum_fs.get(mode, None)
+        this_mode = self.reduce_fs.get(mode, None)
         if this_mode is not None:
             this_dtype = this_mode.get(dtype, None)
             if this_dtype is not None:
@@ -65,20 +63,20 @@ class Accumulators(object):
                     return this_bcast
 
         # Did not find it; make it.
-        accum_f = make_accum_f(var, mode)
+        reduce_f = make_reduce_f(var, mode)
 
         # Put the function in the cache.
-        this_mode = self.accum_fs.get(mode, None)
+        this_mode = self.reduce_fs.get(mode, None)
         if this_mode is None:
-            self.accum_fs[mode] = dict()
-            this_mode = self.accum_fs[mode]
+            self.reduce_fs[mode] = dict()
+            this_mode = self.reduce_fs[mode]
         this_dtype = this_mode.get(dtype, None)
         if this_dtype is None:
             this_mode[dtype] = dict()
             this_dtype = this_mode[dtype]
-        this_dtype[bcast] = accum_f
+        this_dtype[bcast] = reduce_f
 
-        return accum_f
+        return reduce_f
 
     def get_avg_f(self, var):
 
@@ -102,4 +100,4 @@ class Accumulators(object):
         return avg_f
 
 
-accumulators = Accumulators()
+reducers = Reducers()

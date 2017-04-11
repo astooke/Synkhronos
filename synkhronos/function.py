@@ -5,7 +5,7 @@ from .util import struct
 from .data import data, check_synk_inputs
 from . import exct
 from .scatterer import scatterer
-from .accumulators import accumulators
+from .reducers import reducers
 from .comm import cpu_comm, gpu_comm
 
 
@@ -41,7 +41,7 @@ class BaseFunction(object):
         self._full_output_set = list(range(self._n_output))
         self._current_output_set = self._full_output_set
         self._define_collect(collect_modes)
-        self._set_accum_fs(collect_modes, sliced_function.outputs)
+        self._set_reduce_fs(collect_modes, sliced_function.outputs)
 
     def _get_distro_info(self):
         info = dict(
@@ -65,17 +65,17 @@ class BaseFunction(object):
             avgs=["avg" in m for m in collect_modes],
         )
 
-    def _set_accum_fs(self, collect_modes, outputs):
-        accum_fs = list()
+    def _set_reduce_fs(self, collect_modes, outputs):
+        reduce_fs = list()
         avg_fs = list()
         for mode, out in zip(collect_modes, outputs):
-            accum_fs.append(accumulators.get_accum_f(out.variable, mode))
+            reduce_fs.append(reducers.get_reduce_f(out.variable, mode))
             if mode is None or "avg" not in mode:
                 avg_f = None
             else:
-                avg_f = accumulators.get_avg_f(out.variable)
+                avg_f = reducers.get_avg_f(out.variable)
             avg_fs.append(avg_f)
-        self._accum_fs = accum_fs
+        self._reduce_fs = reduce_fs
         self._avg_fs = avg_fs
 
     def get_shared(self):
@@ -105,9 +105,9 @@ class BaseFunction(object):
     def _accum_my_results(self, accum_rs, sliced_rs):
         if accum_rs is None:
             return sliced_rs
-        accum_fs = [self._accum_fs[i]
+        reduce_fs = [self._reduce_fs[i]
             for i in self._current_output_set + self._slc_out_set]
-        for i, (f, a_r, s_r) in enumerate(zip(accum_fs, accum_rs, sliced_rs)):
+        for i, (f, a_r, s_r) in enumerate(zip(reduce_fs, accum_rs, sliced_rs)):
             accum_rs[i] = f(a_r, s_r)
         return accum_rs
 
@@ -154,8 +154,6 @@ class BaseFunction(object):
 
 class WorkerFunction(BaseFunction):
 
-    master_rank = None
-
     def __call__(self):
         """
         1. Gather the right inputs from mp shared values.
@@ -194,7 +192,7 @@ def send(arr, op, nccl=True):
     if nccl and gpu_comm is not None:
         gpu_comm.send(arr, op)
     else:
-        cpu_comm.send(arr, op)
+        cpu_comm.send(arr)
 
 
 ###############################################################################
@@ -205,8 +203,6 @@ def send(arr, op, nccl=True):
 
 
 class FunctionHelpers(BaseFunction):
-
-    _inv_n = None
 
     def __init__(self, inputs, bcast_inputs, to_cpu, return_list=True,
                 **kwargs):
@@ -332,7 +328,7 @@ class Function(FunctionHelpers):
     """ Class of instances returned by ``synkhronos.function()``.  """
 
     def __call__(self, *args, output_subset=None, batch=None, num_slices=1,
-                 **kwargs):
+                **kwargs):
         """ Callable as in Theano function.
 
         When called, Synkhronos functions:

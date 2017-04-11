@@ -9,32 +9,23 @@ from .util import struct
 DISTRIBUTE = 0
 FUNCTION = 1
 DATA = 2
-GPU_COMM = 3
-CPU_COMM = 4
+GPU_COLL = 3
+CPU_COLL = 4
+SYNK_COLL = 5
 
 # Data Sub IDs
-DATA_CREATE = 0
-DATA_ALLOC = 1
-DATA_RESHAPE = 2
-DATA_FREE = 3
+CREATE = 0
+ALLOC = 1
+RESHAPE = 2
+FREE = 3
 
 # Collectives Sub IDs
-GPU_REDUCE = 0  # NOTE: matches position in COLLECT_MODES (maybe not anymore?)
-CPU_REDUCE = 1
-GPU_GATHER = 2
-CPU_GATHER = 3
-NO_COLLECT = 4
-
-GPU_BROADCAST = 5
-CPU_BROADCAST = 6
-GPU_ALL_REDUCE = 7
-CPU_ALL_REDUCE = 8
-GPU_ALL_GATHER = 9
-CPU_ALL_GATHER = 10
-
-# CPU_COMM IDs
-SCATTER = 11
-
+BROADCAST = 0
+SCATTER = 1
+GATHER = 2
+ALL_GATHER = 3
+REDUCE = 4
+ALL_REDUCE = 5
 
 state = struct(forked=False, distributed=False, closed=False)
 sync = None  # Will be assigned back by master.
@@ -84,3 +75,24 @@ def worker_error_close():
         sync.barrier_out.wait(1)
     except BrokenBarrierError:
         pass
+
+
+def init_gpus(rank, n_parallel=None):
+    import theano
+    import theano.gpuarray
+    try:
+        theano.gpuarray.use("cuda" + str(rank))
+    except Exception as exc:
+        if n_parallel is not None:
+            raise exc("Master unable to use GPU.")
+        else:
+            sync.workers_OK.value = False
+            raise exc("Worker rank {} unable to use GPU.".format(rank))
+    finally:
+        sync.barrier_out.wait()
+    if n_parallel is not None:
+        if sync.workers_OK.value:
+            print("Synkhronos: {} GPUs initialized, master rank: {}".format(
+                n_parallel, rank))
+        else:
+            raise RuntimeError("Workers did not initialize GPUs.")

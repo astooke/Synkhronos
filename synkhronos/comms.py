@@ -1,43 +1,38 @@
 
 import zmq
 import numpy as np
+import theano
+import theano.gpuarray
+try:
+    from pygpu import collectives as gpu_coll
+except ImportError as exc:
+    gpu_coll = None
 
-from .accumulators import accumulators
+from .reducers import reducers
 
 sync = None
 cpu_comm = None
 gpu_comm = None
 
-try:
-    from pygpu import collectives as gpu_coll
-    GPUCOLL = True
-except ImportError as exc:
-    GPUCOLL = False
-
 
 def connect_as_master(n_parallel, rank, master_rank, use_gpu,
                       min_port=1024, max_port=65535):
-    # TODO: now can put connect in __init__.
     global cpu_comm, gpu_comm
-    cpu_comm = CpuCommMaster()
-    cpu_comm.connect(n_parallel, master_rank, min_port, max_port)
+    cpu_comm = CpuCommMaster(n_parallel, master_rank, min_port, max_port)
     if use_gpu:
-        if not GPUCOLL:
+        if gpu_coll is None:
             print("WARNING: Using GPUs but unable to import GPU "
                 "collectives from pygpu (may need to install NCCL); "
                 "reverting to CPU-based collectives.")
         else:
-            gpu_comm = GpuCommMaster()
-            gpu_comm.connect(n_parallel, rank, master_rank)
+            gpu_comm = GpuCommMaster(n_parallel, rank, master_rank)
 
 
 def connect_as_worker(n_parallel, rank, master_rank, use_gpu):
     global cpu_comm, gpu_comm
-    cpu_comm = CpuCommWorker()
-    cpu_comm.connect(n_parallel, rank)
-    if use_gpu and GPUCOLL:
-        gpu_comm = GpuCommWorker()
-        gpu_comm.connect(n_parallel, rank, master_rank)
+    cpu_comm = CpuCommWorker(rank)
+    if use_gpu and gpu_coll is not None:
+        gpu_comm = GpuCommWorker(n_parallel, rank, master_rank)
 
 
 ###############################################################################
@@ -49,35 +44,35 @@ def connect_as_worker(n_parallel, rank, master_rank, use_gpu):
 
 class CpuCommMaster(object):
 
-    def __init__(self):
-        self.context = None
-        self.sockets = None
-        self.ports = None
-        self.n = None
-
-    def connect(self, n_parallel, master_rank, min_port=1024, max_port=65535):
+    def __init__(self, n_parallel, master_rank, min_port=1024, max_port=65535):
         context = zmq.Context()
-        sockets = list()
-        ports = list()
+        pair_sockets = list()
+        pair_ports = list()
         for i in range(n_parallel - 1):
             socket = context.socket(zmq.PAIR)
             port = socket.bind_to_random_port(
                 "tcp://*", min_port=min_port, max_port=max_port)
-            sockets.append(socket)
-            ports.append(port)
-        ports_send = list(ports)
-        ports_send.append(ports[master_rank])  # (last worker gets this one)
+            pair_sockets.append(socket)
+            pair_ports.append(port)
+        ports_send = list(pair_ports)
+        ports_send.append(pair_ports[master_rank])  # (last worker gets this one)
+        pub_socket = context.socket(zmq.PUB)
+        pub_port = socket.bind_to_random_port(
+            "tcp://*", min_port=min_port, max_port=max_port)
+        ports_send.append(pub_port)
         sync.dict["ports"] = ports_send
         for _ in range(n_parallel - 1):
             sync.semaphore.release()  # (let the workers connect)
         self.context = context
-        self.sockets = sockets
-        self.ports = ports
+        self.pair_sockets = pair_sockets
+        self.pair_ports = ports
+        self.pub_socket = pub_socket
+        self.pub_port = pub_port
         self.n = n_parallel
         self.vec_ones = np.ones(self.n)
 
     ###########################################################################
-    #                          Support for Function                           #
+    #                       Support for Functions                             #
 
     def collect(self, arr, op):
         if op == "gather":
@@ -96,7 +91,7 @@ class CpuCommMaster(object):
         assert dest.dtype == dtype
         assert dest.shape == shape
         recv_buf[-1] = np.asarray(arr)
-        for i, socket in enumerate(self.sockets):
+        for i, socket in enumerate(self.pair_sockets):
             recv_buf[i] = recv_nd_array(socket, arr)
         if op in ["sum", "avg"]:
             dest[:] = self.vec_ones.dot(recv_buf)  # parallel; np.mean is not
@@ -115,84 +110,69 @@ class CpuCommMaster(object):
     def all_reduce(self, arr, op, dest=None):
         recv_arr = self.reduce(arr, op, dest)
         self.broadcast(recv_arr)
+        return recv_arr
 
     def broadcast(self, arr):
-        for socket in self.sockets:
-            send_nd_array(socket, arr)
+        send_nd_array(self.pub_socket, arr)
 
     def gather(self, arr, nd_up=1, dest=None):
         if nd_up > 1:
             raise NotImplementedError
-        arrs = [np.asarray(arr)]
-        for socket in self.sockets:
-            arrs.append(recv_nd_array(socket))
+        recv_arrs = [np.asarray(arr)]
+        for socket in self.pair_sockets:
+            recv_arrs.append(recv_nd_array(socket))
         combine = np.concatenate if nd_up == 0 else np.vstack
         if dest is not None:
-            dest[:] = combine(arrs)  # TODO: put a try around this for bad dest
+            dest[:] = combine(recv_arrs)
         else:
-            dest = combine(arrs)
+            dest = combine(recv_arrs)
         return dest
 
     def all_gather(self, arr, nd_up=1, dest=None):
         recv_arr = self.gather(arr, nd_up, dest)
         self.broadcast(recv_arr)
 
-    def scatter(self, arr, scat_dim=0):
+    def scatter(self, arr):
         arr = np.asarray(arr)
-        if scat_dim != 0:
-            raise NotImplementedError
-        n_data = arr.shape[scat_dim]
+        n_data = len(arr)
         n = -(- n_data // self.n)  # (ceiling div)
         last_n = n
-        for socket in self.sockets[:-1]:
+        for socket in self.pair_sockets[:-1]:
             send_nd_array(socket, arr[last_n:last_n + n])
             last_n += n
-        send_nd_array(self.sockets[-1], arr[last_n:])
+        send_nd_array(self.pair_sockets[-1], arr[last_n:])
         return arr[:n]
 
 
 class CpuCommWorker(object):
 
-    def __init__(self):
-        self.context = None
-        self.socket = None
-        self.port = None
-
-    def connect(self, rank):
+    def __init__(self, rank):
         context = zmq.Context()
-        socket = context.socket(zmq.PAIR)
+        pair_socket = context.socket(zmq.PAIR)
         sync.semaphore.acquire()
-        port = sync.dict["ports"][rank]
-        socket.connect("tcp://localhost:%s" % port)
+        pair_port = sync.dict["ports"][rank]
+        pair_socket.connect("tcp://localhost:%s" % pair_port)
+        sub_socket = context.socket(zmq.SUB)
+        sub_port = sync.dict["ports"][-1]
+        sub_socket.connect("tcp://localhost:%s" % sub_port)
         self.context = context
-        self.socket = socket
-        self.port = port
+        self.pair_socket = pair_socket
+        self.pair_port = pair_port
+        self.sub_socket = sub_socket
+        self.sub_port = sub_port
 
-    ###########################################################################
-    #                       Support for Functions                             #
+    def send(self, arr):  # (Functions, reduce, gather)
+        send_nd_array(self.pair_socket, np.asarray(arr))
 
-    def send(self, arr):  # (reduce, gather)
-        send_nd_array(self.socket, np.asarray(arr))
+    def recv_pub(self):  # (broadcast)
+        return recv_nd_array(self.sub_socket)
 
-    ###########################################################################
-    #                Support for Shared Variable Collectives                  #
+    def recv_pair(self):  # (scatter)
+        return recv_nd_array(self.pair_socket)
 
-    def broadcast(self, arr=None):
-        return recv_nd_array(self.socket)
-
-    def gather(self, arr):
-        send_nd_array(self.socket, np.asarray(arr))
-
-    def all_gather(self, arr, dest=None):
-        send_nd_array(self.socket, np.asarray(arr))
-        return recv_nd_array(self.socket)
-
-    def reduce(self, arr, op=None):
-        send_nd_array(self.socket, np.asarray(arr))
-
-    def all_reduce(self, arr, op=None, dest=None):
-        send_nd_array(self.socket, np.asarray(arr))
-        return recv_nd_array(self.socket)
+    def send_recv(self, arr):  # (all_gather, all_reduce)
+        send_nd_array(self.pair_socket, np.asarray(arr))
+        return recv_nd_array(self.sub_socket)
 
 
 def send_nd_array(socket, arr):
@@ -201,31 +181,24 @@ def send_nd_array(socket, arr):
     socket.send(arr, copy=False)
 
 
-def recv_nd_array(socket, expected_arr=None):
+def recv_nd_array(socket):
     dtype = socket.recv_string()
     shape = socket.recv_string()
     shape = () if not shape else tuple([int(s) for s in shape.split(',')])
-    if expected_arr is not None:
-        assert expected_arr.dtype.name == dtype
-        assert expected_arr.shape == shape
     arr = socket.recv(copy=False)
     return np.frombuffer(arr, dtype=dtype).reshape(shape)
 
 
 ###############################################################################
-#                        No more super class...that's confusing               #
+#                                                                             #
+#                   GPU Comm (using NCCL via pygpu)                           #
+#                                                                             #
+###############################################################################
+
 
 class GpuComm(object):
 
-    def __init__(self):
-        self.master_rank = None
-        self.n_gpu = None
-        self.avg_fac = 1.
-
-    def connect(self, n_gpu, rank, master_rank):
-        import theano
-        import theano.gpuarray
-        from pygpu import collectives as gpu_coll
+    def __init__(self, n_gpu, rank, master_rank):
         gpu_ctx = theano.gpuarray.get_context(None)
         clique_id = gpu_coll.GpuCommCliqueId(gpu_ctx)
         if rank == master_rank:
@@ -247,13 +220,13 @@ class GpuCommMaster(GpuComm):
 
     def collect(self, arr, op):
         if op == "gather":
-            return self.comm.all_gather(src=arr)
+            return self.comm.all_gather(src=arr, nd_up=0)
         else:
             avg = op == "avg"
             op = "sum" if avg else op
             self.comm.reduce(src=arr, op=op, dest=arr)
             if avg:
-                avg_f = accumulators.get_avg_f(arr)
+                avg_f = reducers.get_avg_f(arr)
                 arr = avg_f(arr, self.avg_fac)
             return arr
 
@@ -263,11 +236,11 @@ class GpuCommMaster(GpuComm):
     def broadcast(self, arr):
         self.comm.broadcast(src=arr)
 
-    def gather(self, arr, dest=None, nd_up=1):
-        return self.comm.all_gather(src=arr, dest=dest, nd_up=nd_up)
+    def gather(self, arr, nd_up=1):
+        return self.comm.all_gather(src=arr, nd_up=nd_up)
 
-    def all_gather(self, arr, dest=None, nd_up=1):
-        return self.comm.all_gather(src=arr, dest=dest, nd_up=nd_up)
+    def all_gather(self, arr):
+        return self.comm.all_gather(src=arr, nd_up=0)
 
     def reduce(self, arr, op, dest=None):
         return self._reduce(arr, op, dest)
@@ -282,9 +255,9 @@ class GpuCommMaster(GpuComm):
         if dest is not None:
             r = dest
         if avg:
-            avg_f = accumulators.get_avg_f(r)
+            avg_f = reducers.get_avg_f(r)
             r = avg_f(r, self.avg_fac)
-        return r  # TODO: make sure shared var gets result of this function.
+        return r  # (collectives.py uses shared_var.set_value(r))
 
 
 class GpuCommWorker(GpuComm):
@@ -296,7 +269,7 @@ class GpuCommWorker(GpuComm):
         if op is None:
             return
         elif op == "gather":
-            self.comm.all_gather(src=arr)
+            self.comm.all_gather(src=arr, nd_up=0)
         else:
             op = "sum" if op == "avg" else op
             # NOTE: kwarg "dest" only needed for NCCL bug.
@@ -309,18 +282,20 @@ class GpuCommWorker(GpuComm):
         self.comm.broadcast(array=arr, root=self.master_rank)
 
     def gather(self, arr, nd_up=1):
-        self.comm.all_gather(src=arr, nd_up=1)
+        self.comm.all_gather(src=arr, nd_up=nd_up)
 
-    def all_gather(self, arr, dest):
-        return self.comm.all_gather(src=arr, dest=dest, nd_up=0)  # FIXME
+    def all_gather(self, arr):
+        return self.comm.all_gather(src=arr, nd_up=0)
 
     def reduce(self, arr, op):
         op = "sum" if op == "avg" else op
         self.comm.reduce(src=arr, op=op, root=self.master_rank)
 
-    def all_reduce(self, arr, op, dest):
+    def all_reduce(self, arr, op):
         avg = op == "avg"
         op = "sum" if avg else op
-        self.comm.all_reduce(src=arr, op=op, dest=dest)
-        avg_f = accumulators.get_avg_f(dest)
-        return avg_f(dest, self.avg_fac)  # TODO: make sure shared var gets it.
+        self.comm.all_reduce(src=arr, op=op, dest=arr)
+        if avg:
+            avg_f = reducers.get_avg_f(arr)
+            arr = avg_f(arr, self.avg_fac)
+        return arr  # (collectives.py uses shared_var.set_value(arr))

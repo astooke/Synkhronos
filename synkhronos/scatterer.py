@@ -1,7 +1,7 @@
 
 import numpy as np
 
-from .common import PRE
+from .util import PREFIX
 from .shmemarray import NpShmemArray
 
 
@@ -32,6 +32,9 @@ class Scatterer(object):
     def __len__(self):
         return len(self.synk_datas)
 
+    def __getitem__(self, k):
+        return self.synk_datas[k]
+
     def append(self, synk_data):
         self.synk_datas.append(synk_data)
 
@@ -59,7 +62,7 @@ class Scatterer(object):
         return tuple(my_inputs)
 
     def _alloc_idxs_arr(self, size, tag):
-        tag = PRE + "_scat_idxs_" + str(tag)
+        tag = PREFIX + "_scat_idxs_" + str(tag)
         sync.idxs_arr = NpShmemArray('int64', size, tag, self.create)
 
     ###########################################################################

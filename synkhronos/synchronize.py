@@ -4,7 +4,12 @@ import multiprocessing as mp
 import numpy as np
 from ctypes import c_bool
 
+
 from .util import struct
+
+
+def np_mp_arr(t_or_tc, size_or_init):
+    return np.ctypeslib.as_array(mp.RawArray(t_or_tc, size_or_init))
 
 
 def build_syncs(n_parallel, max_n_var=100, max_dim=16):
@@ -16,7 +21,7 @@ def build_syncs(n_parallel, max_n_var=100, max_dim=16):
         semaphore=mp.Semaphore(0),
         barrier=mp.Barrier(n_parallel),
     )
-    dist = struct(
+    fbld = struct(
         barrier=mp.Barrier(n_parallel - 1),
     )
     exct = struct(
@@ -33,12 +38,14 @@ def build_syncs(n_parallel, max_n_var=100, max_dim=16):
         n_shared=mp.RawValue('i', 0),
         vars=mp.RawArray('i', max_n_var),
         datas=mp.RawArray('i', max_n_var),
+        shapes=np_mp_arr('i', max_n_var * max_dim).reshape(max_n_var, max_dim),
+        nd_up=mp.RawValue('i', 0),
     )
     data = struct(
         ID=mp.RawValue('I', 0),
         dtype=mp.RawArray('c', 20),  # (by name)
         ndim=mp.RawValue('I', 0),
-        shape=np.ctypeslib.as_array(mp.RawArray('Q', max_dim)),
+        shape=np_mp_arr('Q', max_dim),
         tag=mp.RawValue('I', 0),
         alloc_size=mp.RawValue('Q', 0),
     )
@@ -50,7 +57,7 @@ def build_syncs(n_parallel, max_n_var=100, max_dim=16):
         new_collect=mp.RawValue(c_bool, True),
     )
     scat = struct(
-        assign_idxs=np.ctypeslib.as_array(mp.RawArray('Q', n_parallel + 1)),
+        assign_idxs=np_mp_arr('Q', n_parallel + 1),
         use_idxs_arr=mp.RawValue(c_bool, False),
         tag=mp.RawValue('I', 0),
         size=mp.RawValue('Q', 0),
@@ -60,7 +67,7 @@ def build_syncs(n_parallel, max_n_var=100, max_dim=16):
 
     syncs = struct(
         comm=comm,
-        dist=dist,
+        fbld=fbld,
         exct=exct,
         coll=coll,
         data=data,
@@ -71,11 +78,12 @@ def build_syncs(n_parallel, max_n_var=100, max_dim=16):
 
 
 def give_syncs(syncs):
-    from . import comm
+    from . import comms as comm
     from . import exct
     from . import collectives as coll
     from . import data
     from . import function as func
+    from . import function_builder as fbld
     from . import scatterer as scat
 
     comm.sync = syncs.comm
@@ -83,5 +91,5 @@ def give_syncs(syncs):
     coll.sync = syncs.coll
     data.sync = syncs.data
     func.sync = syncs.func
+    fbld.sync = syncs.fbld
     scat.sync = syncs.scat
-
