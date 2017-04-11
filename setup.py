@@ -1,7 +1,7 @@
 from setuptools import setup
 
 setup(name='synkhronos',
-      version='0.3.1',
+      version='1.0.0',
       description='Theano Extension for Data Parallelism',
       long_description='Documentation at: http://synkhronos.readthedocs.io',
       url='http://github.com/astooke/synkhronos',
