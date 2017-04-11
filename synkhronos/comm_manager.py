@@ -5,81 +5,39 @@ import numpy as np
 from .accumulators import accumulators
 
 sync = None
+cpu_comm = None
+gpu_comm = None
+
+try:
+    from pygpu import collectives as gpu_coll
+    GPUCOLL = True
+except ImportError as exc:
+    GPUCOLL = False
 
 
-###############################################################################
-#                                                                             #
-#                        Overall Comms Manager                                #
-#                                                                             #
-###############################################################################
+def connect_as_master(n_parallel, rank, master_rank, use_gpu,
+                      min_port=1024, max_port=65535):
+    # TODO: now can put connect in __init__.
+    global cpu_comm, gpu_comm
+    cpu_comm = CpuCommMaster()
+    cpu_comm.connect(n_parallel, master_rank, min_port, max_port)
+    if use_gpu:
+        if not GPUCOLL:
+            print("WARNING: Using GPUs but unable to import GPU "
+                "collectives from pygpu (may need to install NCCL); "
+                "reverting to CPU-based collectives.")
+        else:
+            gpu_comm = GpuCommMaster()
+            gpu_comm.connect(n_parallel, rank, master_rank)
 
 
-class Comm(object):
-
-    def __init__(self):
-        self.cpu = None
-        self.gpu = None
-        try:
-            from pygpu import collectives as gpu_coll
-            self.gpu_coll_imported = True
-        except ImportError as exc:
-            self.gpu_coll_imported = False
-
-    def connect_as_master(self, n_parallel, rank, master_rank, use_gpu,
-                          min_port=1024, max_port=65535):
-        self.cpu = CpuCommMaster()
-        self.cpu.connect(n_parallel, master_rank, min_port, max_port)
-        if use_gpu and self.gpu_coll_imported:
-            self.gpu = GpuCommMaster()
-            self.gpu.connect(n_parallel, rank, master_rank)
-
-    def connect_as_worker(self, n_parallel, rank, master_rank, use_gpu):
-        self.cpu = CpuCommWorker()
-        self.cpu.connect(n_parallel, rank)
-        if use_gpu and self.gpu_coll_imported:
-            self.gpu = GpuCommWorker()
-            self.gpu.connect(n_parallel, rank, master_rank)
-
-    ###########################################################################
-    #                       Support for Functions                             #
-
-    def collect(self, arr, op, nccl=True):  # (Master only)
-        if op is None:
-            return arr
-        comm = self.gpu if nccl and self.gpu is not None else self.cpu
-        return comm.collect(arr, op)
-
-    def send(self, arr, op, nccl=True):  # (Worker only)
-        if op is None:
-            return
-        comm = self.gpu if nccl and self.gpu is not None else self.cpu
-        comm.send(arr, op)
-
-    ###########################################################################
-    #                   Support for Shared Variable Collectives               #
-
-    def broadcast(self, arr, nccl=True):
-        comm = self.gpu if nccl and self.gpu is not None else self.cpu
-        comm.broadcast(arr)
-
-    def gather(self, arr, dest=None, nd_up=1, nccl=True):
-        comm = self.gpu if nccl and self.gpu is not None else self.cpu
-        return comm.gather(arr, dest, nd_up)
-
-    def all_gather(self, arr, dest, nd_up=1, nccl=True):
-        comm = self.gpu if nccl and self.gpu is not None else self.cpu
-        return comm.all_gather(arr, dest, nd_up)
-
-    def reduce(self, arr, op, dest, nccl=True):
-        comm = self.gpu if nccl and self.gpu is not None else self.cpu
-        return comm.reduce(arr, op, dest)
-
-    def all_reduce(self, arr, op, nccl=True):
-        comm = self.gpu if nccl and self.gpu is not None else self.cpu
-        return comm.all_reduce(arr, op)
-
-
-comm = Comm()
+def connect_as_worker(n_parallel, rank, master_rank, use_gpu):
+    global cpu_comm, gpu_comm
+    cpu_comm = CpuCommWorker()
+    cpu_comm.connect(n_parallel, rank)
+    if use_gpu and GPUCOLL:
+        gpu_comm = GpuCommWorker()
+        gpu_comm.connect(n_parallel, rank, master_rank)
 
 
 ###############################################################################
@@ -150,6 +108,8 @@ class CpuCommMaster(object):
             dest[:] = recv_buf.min(axis=0)
         elif op == "prod":
             dest[:] = recv_buf.prod(axis=0)
+        else:
+            raise ValueError("Unrecognized op: {}".format(op))
         return dest
 
     def all_reduce(self, arr, op, dest=None):

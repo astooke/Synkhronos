@@ -6,7 +6,7 @@ from .data import data, check_synk_inputs
 from . import exct
 from .scatterer import scatterer
 from .accumulators import accumulators
-from .comm import comm_worker, comm_master
+from .comm import cpu_comm, gpu_comm
 
 
 sync = None
@@ -174,7 +174,7 @@ class WorkerFunction(BaseFunction):
             return num_slices, None
         if sync.is_new_subset.value:
             o_set = [i for i in range(self._n_output)
-                if sync.output_subset[i]]
+                     if sync.output_subset[i]]
             self._current_output_set = o_set
         output_subset = None \
             if len(self._current_output_set) == self._n_output else \
@@ -185,7 +185,16 @@ class WorkerFunction(BaseFunction):
         for i, r in zip(self._current_output_set, my_results):
             nccl = self._collect.nccl[i]
             op = self._collect.ops[i]
-            comm_worker.send(r, op, nccl)
+            send(r, op, nccl)
+
+
+def send(arr, op, nccl=True):
+    if op is None:
+        return
+    if nccl and gpu_comm is not None:
+        gpu_comm.send(arr, op)
+    else:
+        cpu_comm.send(arr, op)
 
 
 ###############################################################################
@@ -266,7 +275,7 @@ class FunctionHelpers(BaseFunction):
         for o, r in zip(self._current_output_set, my_results):
             nccl = self._collect.nccl[o]
             op = self._collect.ops[o]
-            results.append(comm_master.collect(r, op, nccl))
+            results.append(collect(r, op, nccl))
         for i, o in enumerate(self._current_output_set):
             if self._to_cpu[o]:
                 results[i] = np.asarray(results[i])
@@ -301,6 +310,15 @@ def build_input_orderer(inputs):
         if var.name is not None:
             input_orderer[var.name] = idx
     return input_orderer
+
+
+def collect(arr, op, nccl=True):
+    if op is None:
+        return arr
+    if nccl and gpu_comm is not None:
+        return gpu_comm.collect(arr, op)
+    else:
+        return cpu_comm.collect(arr, op)
 
 
 ###############################################################################
