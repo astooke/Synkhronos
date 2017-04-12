@@ -174,7 +174,7 @@ def reduce_comm(shared_vars, op, in_place, gpu=True):
 def all_reduce_comm(shared_vars, op, gpu=True):
     arrays = collectives_prep(shared_vars, op=op)
     exct_ID, comm = exct_comm_type(gpu)
-    exct.launch(exct_ID, exct.REDUCE)
+    exct.launch(exct_ID, exct.ALL_REDUCE)
     results = list()
     for arr in arrays:
         results.append(comm.all_reduce(arr, op, arr))

@@ -223,7 +223,7 @@ class GpuCommMaster(GpuComm):
             return self.comm.all_gather(src=arr, nd_up=0)
         else:
             avg = op == "avg"
-            op = "sum" if avg else op
+            if avg: op = "sum"
             # NOTE: all_reduce needed for NCCL bug in reduce
             # self.comm.reduce(src=arr, op=op, dest=arr)
             self.comm.all_reduce(src=arr, op=op, dest=arr)
@@ -253,8 +253,10 @@ class GpuCommMaster(GpuComm):
     def _reduce(self, arr, op, dest=None, all_reduce=True):
         avg = op == "avg"
         if avg: op = "sum"
-        reduce_method = self.comm.all_reduce if all_reduce else self.comm.reduce
-        r = reduce_method(src=arr, op=op, dest=dest)
+        if all_reduce:
+            r = self.comm.all_reduce(src=arr, op=op, dest=dest)
+        else:
+            r = self.comm.reduce(src=arr, op=op, dest=dest)
         if dest is not None: r = dest
         if avg:
             avg_f = reducers.get_avg_f(r)
@@ -273,7 +275,7 @@ class GpuCommWorker(GpuComm):
         elif op == "gather":
             self.comm.all_gather(src=arr, nd_up=0)
         else:
-            op = "sum" if op == "avg" else op
+            if op == "avg": op = "sum"
             # NOTE: all_reduce needed for for NCCL bug in reduce.
             # self.comm.reduce(src=arr, op=op, root=self.master_rank)
             self.comm.all_reduce(src=arr, op=op, dest=arr)
