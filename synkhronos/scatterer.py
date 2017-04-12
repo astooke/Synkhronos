@@ -38,7 +38,7 @@ class Scatterer(object):
     def append(self, synk_data):
         self.synk_datas.append(synk_data)
 
-    def get_my_inputs(self, n_scat_inputs, n_bcast_inputs):
+    def get_my_inputs(self, n_scat_inputs, n_bcast_inputs=0):
         n_tot_inputs = n_scat_inputs + n_bcast_inputs
         if n_tot_inputs == 0:
             return ()
@@ -82,8 +82,9 @@ class Scatterer(object):
     ###########################################################################
     #                           Master-only                                   #
 
-    def assign_inputs(self, synk_datas, batch, num_scat):
+    def assign_inputs(self, synk_datas, batch, num_scat=None):
         batch = check_batch_types(batch)
+        if num_scat is None: num_scat = len(synk_datas)
         if num_scat > 0:
             sync.assign_idxs[:] = \
                 build_scat_idxs(self.n_parallel, synk_datas[:num_scat], batch)

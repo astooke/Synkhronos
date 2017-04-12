@@ -1,9 +1,9 @@
 
 import numpy as np
 
-from . import exct
 from .shmemarray import ShmemRawArray, NP_TO_C_TYPE
 from .util import PREFIX
+from . import exct
 
 
 sync = None
@@ -20,13 +20,15 @@ class BaseData(object):
 
     _create = False
 
-    def __init__(self, ID, dtype, ndim):
+    def __init__(self, ID, dtype, ndim, minibatch):
         self._ID = ID
         self._ctype = NP_TO_C_TYPE.get(dtype, None)
         self._dtype = dtype.name if hasattr(dtype, "name") else dtype
         if self._ctype is None:
             raise TypeError("Unsupported numpy dtype: {}".format(dtype))
+        self._ndim = ndim
         self._data = np.empty([0] * ndim, dtype=dtype)
+        self._minibatch = minibatch
         self._tag = 0
         self._shmem = None
         self._np_shmem = None
@@ -52,9 +54,11 @@ class BaseData(object):
 class WorkerData(BaseData):
 
     def __init__(self, ID):
+        assert ID == sync.ID.value
         dtype = sync.dtype.value.decode('utf-8')
         ndim = sync.ndim.value
-        super().__init__(ID, dtype, ndim)
+        minibatch = sync.minibatch.value
+        super().__init__(ID, dtype, ndim, minibatch)
 
     def alloc_shmem(self):
         size = sync.alloc_size.value
@@ -62,8 +66,7 @@ class WorkerData(BaseData):
         self._alloc_shmem(size, tag)
 
     def shape_data(self):
-        ndim = sync.ndim.value
-        shape = sync.shape[:ndim]
+        shape = sync.shape[:self._ndim]
         self._shape_data(shape)
 
     def free_memory(self):
@@ -82,11 +85,12 @@ class DataHelpers(BaseData):
     _create = True
 
     def __init__(self, ID, dtype, ndim, minibatch=False, name=None):
-        super().__init__(ID, dtype, ndim)
+        super().__init__(ID, dtype, ndim, minibatch)
+        sync.ID.value = ID
         sync.dtype.value = bytes(self._dtype, encoding='utf-8')
-        sync.ndim.value = self._data.ndim
+        sync.ndim.value = ndim
+        sync.minibatch.value = minibatch
         exct.launch(exct.DATA, exct.CREATE)
-        self._minibatch = minibatch
         self._name = name
         exct.join()
 
@@ -108,7 +112,7 @@ class DataHelpers(BaseData):
         sync.tag.value = self._tag
         sync.ID.value = self._ID
         sync.shape[:self.ndim] = shape
-        exct.launch(exct.Data, exct.ALLOC)
+        exct.launch(exct.DATA, exct.ALLOC)
         self._shape_data(shape)
         exct.join()
 
@@ -142,18 +146,6 @@ class DataHelpers(BaseData):
             raise TypeError("Wrong data ndim provided for data, received: "
                 "{}, expected: {}".format(input_data.ndim, self.ndim))
         return input_data
-
-
-def check_synk_inputs(synk_datas, vars):
-    for idx, (s_data, var) in enumerate(zip(synk_datas, vars)):
-        if not isinstance(s_data, BaseData):
-            raise TypeError("All function inputs must be of type SynkData.")
-        if s_data.dtype != var.dtype:
-            raise TypeError("Incorrect input dtype for position {}; expected: "
-                "{}, received: {}.".format(idx, var.dtype, s_data.dtype))
-        if s_data.ndim != var.ndim:
-            raise TypeError("Incorrect input dimensions for position {}; "
-                "expected: {}, received: {}.".format(idx, var.ndim, s_data.ndim))
 
 
 ###############################################################################

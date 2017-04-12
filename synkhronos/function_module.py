@@ -2,11 +2,12 @@
 import numpy as np
 
 from .util import struct
-from .data import data, check_synk_inputs
-from . import exct
+from .data_builder import data
+from .data_module import Data
 from .scatterer import scatterer
 from .reducers import reducers
-from .comm import cpu_comm, gpu_comm
+from . import comm
+from . import exct
 
 
 sync = None
@@ -120,9 +121,9 @@ class BaseFunction(object):
                 accum_rs[i] = f(r, inv_num)
         return accum_rs
 
-    def slice_inputs(self, inputs, num_slices):
+    def _slice_inputs(self, inputs, num_slices):
         length = None
-        if self._in.n_scat > 0:
+        if self._n_scat > 0:
             length = len(inputs[0])
         if self._slc_shareds:
             s_lengths = [s.container.data.shape[0] for s in self._slc_shareds]
@@ -133,15 +134,17 @@ class BaseFunction(object):
             if length is not None and s_len != length:
                 raise ValueError("Had different lengths for sliceable shareds "
                     "{} vs sliceable inputs {}".format(s_len, length))
+            if length is None:
+                length = s_len
         edges = np.linspace(0, length, num_slices + 1, dtype='int64')
         for slc in [slice(*edges[i:i + 2]) for i in range(num_slices)]:
             sliced_inputs = list()
-            for inpt in inputs[:self._in.n_scat]:
+            for inpt in inputs[:self._n_scat]:
                 sliced_inputs.append(inpt[slc])
-            for inpt in inputs[self._in.n_scat:]:
+            for inpt in inputs[self._n_scat:]:
                 sliced_inputs.append(inpt)
             if self._slc_shareds:
-                sliced_inputs += [slc.start, slc.stop]
+                sliced_inputs += [np.array(slc.start), np.array(slc.stop)]
             yield tuple(sliced_inputs)
 
 
@@ -189,10 +192,10 @@ class WorkerFunction(BaseFunction):
 def send(arr, op, nccl=True):
     if op is None:
         return
-    if nccl and gpu_comm is not None:
-        gpu_comm.send(arr, op)
+    if nccl and comm.gpu is not None:
+        comm.gpu.send(arr, op)
     else:
-        cpu_comm.send(arr)
+        comm.cpu.send(arr)
 
 
 ###############################################################################
@@ -308,13 +311,25 @@ def build_input_orderer(inputs):
     return input_orderer
 
 
+def check_synk_inputs(synk_datas, vars):
+    for idx, (s_data, var) in enumerate(zip(synk_datas, vars)):
+        if not isinstance(s_data, Data):
+            raise TypeError("All function inputs must be of Synkhronos type Data.")
+        if s_data.dtype != var.dtype:
+            raise TypeError("Incorrect input dtype for position {}; expected: "
+                "{}, received: {}.".format(idx, var.dtype, s_data.dtype))
+        if s_data.ndim != var.ndim:
+            raise TypeError("Incorrect input dimensions for position {}; "
+                "expected: {}, received: {}.".format(idx, var.ndim, s_data.ndim))
+
+
 def collect(arr, op, nccl=True):
     if op is None:
         return arr
-    if nccl and gpu_comm is not None:
-        return gpu_comm.collect(arr, op)
+    if nccl and comm.gpu is not None:
+        return comm.gpu.collect(arr, op)
     else:
-        return cpu_comm.collect(arr, op)
+        return comm.cpu.collect(arr, op)
 
 
 ###############################################################################
@@ -383,31 +398,28 @@ class Function(FunctionHelpers):
             results = results[0]
         return results
 
-    def build_inputs(self, *args, **kwargs):
+    def build_inputs(self, *args, force_cast=False, oversize=1, minibatch=False,
+                     **kwargs):
         """ convenience method which internally calls synkhronos.data() for
         each input variable associated with this function; provide data inputs
         as if calling the Theano function.
         # TODO: move force_cast and oversize to function signature?
         """
         # FIXME: possibly out of date
-        force_cast = kwargs.pop("force_cast", False)
-        oversize = kwargs.pop("oversize", 1)
-        scatter = kwargs.pop("scatter", True)
-        inputs = self._order_inputs(args, kwargs)
-        if not isinstance(scatter, (list, tuple)):
-            scatter = [scatter] * self._n_input
-        elif len(scatter) != self._n_input:
-            raise ValueError("Scatter must be single boolean or list/tuple of "
-                "length equal to the number of inputs.")
+        ordered_inputs = self._order_inputs(args, kwargs)
         synk_datas = list()
-        for var, inpt, scat in zip(self._input.vars, inputs, scatter):
-            synk_data = data(value=inpt,
-                             dtype=var.dtype,
-                             scatter=scat,
+        for var, inpt in zip(self._input_vars, ordered_inputs):
+            synk_data = data(var=var,
+                             value=inpt,
+                             minibatch=minibatch,
                              force_cast=force_cast,
                              oversize=oversize,
+                             name=var.name,
                              )
             synk_datas.append(synk_data)
-        return tuple(synk_datas)
+        if len(synk_datas) == 1:
+            return synk_datas[0]
+        else:
+            return tuple(synk_datas)
 
 

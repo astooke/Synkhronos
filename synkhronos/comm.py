@@ -11,28 +11,28 @@ except ImportError as exc:
 from .reducers import reducers
 
 sync = None
-cpu_comm = None
-gpu_comm = None
+cpu = None
+gpu = None
 
 
 def connect_as_master(n_parallel, rank, master_rank, use_gpu,
                       min_port=1024, max_port=65535):
-    global cpu_comm, gpu_comm
-    cpu_comm = CpuCommMaster(n_parallel, master_rank, min_port, max_port)
+    global cpu, gpu
+    cpu = CpuCommMaster(n_parallel, master_rank, min_port, max_port)
     if use_gpu:
         if gpu_coll is None:
             print("WARNING: Using GPUs but unable to import GPU "
                 "collectives from pygpu (may need to install NCCL); "
                 "reverting to CPU-based collectives.")
         else:
-            gpu_comm = GpuCommMaster(n_parallel, rank, master_rank)
+            gpu = GpuCommMaster(n_parallel, rank, master_rank)
 
 
 def connect_as_worker(n_parallel, rank, master_rank, use_gpu):
-    global cpu_comm, gpu_comm
-    cpu_comm = CpuCommWorker(rank)
+    global cpu, gpu
+    cpu = CpuCommWorker(rank)
     if use_gpu and gpu_coll is not None:
-        gpu_comm = GpuCommWorker(n_parallel, rank, master_rank)
+        gpu = GpuCommWorker(n_parallel, rank, master_rank)
 
 
 ###############################################################################
@@ -65,7 +65,7 @@ class CpuCommMaster(object):
             sync.semaphore.release()  # (let the workers connect)
         self.context = context
         self.pair_sockets = pair_sockets
-        self.pair_ports = ports
+        self.pair_ports = pair_ports
         self.pub_socket = pub_socket
         self.pub_port = pub_port
         self.n = n_parallel

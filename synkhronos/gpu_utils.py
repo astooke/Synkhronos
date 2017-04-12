@@ -2,7 +2,7 @@
 import numpy as np
 import multiprocessing as mp
 import theano
-from pygpu import GpuArray
+from pygpu.gpuarray import GpuArray
 
 
 def get_n_gpu():

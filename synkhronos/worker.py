@@ -3,9 +3,9 @@ import atexit
 
 from .synchronize import give_syncs
 from .scatterer import scatterer
-from .comms import connect_as_worker
+from .comm import connect_as_worker
 from .function_builder import receive_distribution
-from .data import WorkerData
+from .data_module import WorkerData
 from .collectives import worker_gpu_coll, worker_cpu_coll, worker_synk_coll
 from . import exct
 

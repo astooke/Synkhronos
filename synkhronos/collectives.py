@@ -1,19 +1,16 @@
 
 from pygpu.gpuarray import GpuArray
 
-from .data import Data
+from .data_module import Data
 from .scatterer import scatterer
-from .comms import gpu_comm, cpu_comm
 from .gpu_utils import alloc_gpu_arr
+from . import comm
 from . import exct
 
 
 __all__ = ["broadcast", "scatter", "gather", "all_gather", "reduce", "all_reduce"]
 
 sync = None  # (assigned later by master)
-
-GPU_EXCT = [exct.GPU_COLL, gpu_comm]
-CPU_EXCT = [exct.CPU_COLL, cpu_comm]
 
 
 ###############################################################################
@@ -99,7 +96,7 @@ def all_reduce(shared_vars, op="avg", nccl=True):
 
 def broadcast_comm(shared_vars, gpu=True):
     arrays = collectives_prep(shared_vars, bcast=True)
-    exct_ID, comm = GPU_EXCT if gpu else CPU_EXCT
+    exct_ID, comm = exct_comm_type(gpu)
     exct.launch(exct_ID, exct.BROADCAST)
     for arr in arrays:
         comm.broadcast(arr)
@@ -107,7 +104,7 @@ def broadcast_comm(shared_vars, gpu=True):
 
 
 def broadcast_synk(shared_vars, synk_datas):
-    collectives_prep(shared_vars, synk_datas)
+    collectives_prep(shared_vars, synk_datas=synk_datas)
     exct.launch(exct.SYNK_COLL, exct.BROADCAST)
     for var, sd in shared_vars, synk_datas:
         var.set_value(sd._data)
@@ -119,14 +116,14 @@ def scatter_cpu(shared_vars, values):
     exct.launch(exct.CPU_COLL, exct.SCATTER)
     results = list()
     for val in values:
-        results.append(cpu_comm.scatter(val))
+        results.append(comm.cpu.scatter(val))
     for var, r in zip(shared_vars, results):
         var.set_value(r)
     exct.join()
 
 
 def scatter_synk(shared_vars, synk_datas, batch=None):
-    collectives_prep(shared_vars, synk_datas)
+    collectives_prep(shared_vars, synk_datas=synk_datas)
     scatterer.assign_inputs(synk_datas, batch)
     exct.launch(exct.SYNK_COLL, exct.SCATTER)
     results = scatterer.get_my_inputs(len(shared_vars))
@@ -137,7 +134,7 @@ def scatter_synk(shared_vars, synk_datas, batch=None):
 
 def gather_comm(shared_vars, nd_up, gpu=True):
     arrays = collectives_prep(shared_vars, nd_up=nd_up)
-    exct_ID, comm = GPU_EXCT if gpu else CPU_EXCT
+    exct_ID, comm = exct_comm_type(gpu)
     exct.launch(exct_ID, exct.GATHER)
     results = list()
     for arr in arrays:
@@ -148,7 +145,7 @@ def gather_comm(shared_vars, nd_up, gpu=True):
 
 def all_gather_comm(shared_vars, gpu=True):
     arrays = collectives_prep(shared_vars)
-    exct_ID, comm = GPU_EXCT if gpu else CPU_EXCT
+    exct_ID, comm = exct_comm_type(gpu)
     exct.launch(exct_ID, exct.ALL_GATHER)
     results = list()
     for arr in arrays:
@@ -159,30 +156,31 @@ def all_gather_comm(shared_vars, gpu=True):
 
 
 def reduce_comm(shared_vars, op, in_place, gpu=True):
-    arrays = collectives_prep(shared_vars)
+    arrays = collectives_prep(shared_vars, op=op)
     dests = arrays if in_place else [None] * len(arrays)
-    exct_ID, comm = GPU_EXCT if gpu else CPU_EXCT
+    exct_ID, comm = exct_comm_type(gpu)
     exct.launch(exct_ID, exct.REDUCE)
     results = list()
     for arr, dest in zip(arrays, dests):
         results.append(comm.reduce(arr, op, dest))
-    exct.join()
     if in_place or not gpu:
         for var, r in zip(shared_vars, results):
             var.set_value(r)
+    exct.join()
     if not in_place:
         return results
 
 
 def all_reduce_comm(shared_vars, op, gpu=True):
-    arrays = collectives_prep(shared_vars)
-    exct_ID, comm = GPU_EXCT if gpu else CPU_EXCT
+    arrays = collectives_prep(shared_vars, op=op)
+    exct_ID, comm = exct_comm_type(gpu)
     exct.launch(exct_ID, exct.REDUCE)
     results = list()
     for arr in arrays:
         results.append(comm.all_reduce(arr, op, arr))
     for var, r in zip(shared_vars, results):
         var.set_value(r)
+    exct.join()
 
 
 ###############################################################################
@@ -197,7 +195,7 @@ def process_bcast_vars_vals(shared_vars, values, nccl):
     synk_idxs = [i for i, val in enumerate(values) if isinstance(val, Data)]
     synk_vars = [shared_vars[i] for i in synk_idxs]
     synk_datas = [values[i] for i in synk_idxs]
-    if nccl and gpu_comm is not None:
+    if nccl and comm.gpu is not None:
         is_gpu_var = [isinstance(v.container.data, GpuArray) for v in shared_vars]
         gpu_idxs = [i for i, g in enumerate(is_gpu_var) if g and i not in synk_idxs]
         gpu_vars = [shared_vars[i] for i in gpu_idxs]
@@ -231,7 +229,7 @@ def process_scat_vars_vals(shared_vars, values):
 def process_coll_vars(shared_vars, nccl):
     if not isinstance(shared_vars, (list, tuple)):
         shared_vars = [shared_vars]
-    if nccl and gpu_comm is not None:
+    if nccl and comm.gpu is not None:
         is_gpu_var = [isinstance(v.container.data, GpuArray) for v in shared_vars]
         gpu_idxs = [i for i, g in enumerate(is_gpu_var) if g]
         gpu_vars = [shared_vars[i] for i in gpu_idxs]
@@ -243,20 +241,22 @@ def process_coll_vars(shared_vars, nccl):
     return gpu_vars, cpu_vars, gpu_idxs, cpu_idxs
 
 
-def collectives_prep(shared_vars, synk_datas=None, bcast=True, nd_up=None):
+def collectives_prep(shared_vars, synk_datas=None, op=None, bcast=True, nd_up=None):
     shared_IDs = shareds_registry.get_IDs(shared_vars)
     n_shared = len(shared_IDs)
     sync.n_shared.value = n_shared
     sync.vars[:n_shared] = shared_IDs
+    if op is not None:
+        sync.op.value = bytes(op, encoding='utf-8')
     if nd_up is not None:
         sync.nd_up.value = nd_up
     if bcast:  # (only needed for GPU)
-        for i, v in shared_vars:
+        for i, v in enumerate(shared_vars):
             sync.shapes[i][:v.ndim] = v.container.data.shape
     if synk_datas is not None:
         if not isinstance(synk_datas, (list, tuple)):
             synk_datas = [synk_datas]
-        sync.datas[:n_shared] = [sd.ID for sd in synk_datas]
+        sync.datas[:n_shared] = [sd._ID for sd in synk_datas]
     arrays = shareds_registry.get_arrays(shared_IDs)
     return arrays
 
@@ -287,6 +287,12 @@ def check_vars_vals(shared_vars, values):
     return shared_vars, values
 
 
+def exct_comm_type(gpu):
+    if gpu:
+        return (exct.GPU_COLL, comm.gpu)
+    else:
+        return (exct.CPU_COLL, comm.cpu)
+
 ###############################################################################
 #                                                                             #
 #                           Worker Tasks                                      #
@@ -300,35 +306,35 @@ def worker_gpu_coll(comm_ID):
     if comm_ID == exct.BROADCAST:
         shared_vars = shareds_registry.get_vars(shared_IDs)
         for i, (arr, var) in enumerate(arrays, shared_vars):
-            shape = sync.shapes[i][:var.ndim]
+            shape = tuple(sync.shapes[i][:var.ndim])
             if shape != arr.shape:
                 arr = alloc_gpu_arr(arr.dtype, shape)
-                gpu_comm.broadcast(arr)
+                comm.gpu.broadcast(arr)
                 var.set_value(arr)
             else:
-                gpu_comm.broadcast(arr)
+                comm.gpu.broadcast(arr)
     elif comm_ID == exct.GATHER:
         nd_up = sync.nd_up.value
         for arr in arrays:
-            gpu_comm.gather(arr, nd_up)
+            comm.gpu.gather(arr, nd_up)
     elif comm_ID == exct.ALL_GATHER:
         results = list()
         for arr in arrays:
-            results.append(gpu_comm.all_gather(arr))
+            results.append(comm.gpu.all_gather(arr))
         for var, r in zip(shareds_registry.get_vars(shared_IDs), results):
             var.set_value(r)
     elif comm_ID == exct.REDUCE:
         op = sync.op.value.decode(encoding='utf-8')
         op = "sum" if op == "avg" else op
         for arr in arrays:
-            gpu_comm.reduce(arr, op)
+            comm.gpu.reduce(arr, op)
     elif comm_ID == exct.ALL_REDUCE:
         op = sync.op.value.decode(encoding='utf-8')
         avg = op == "avg"
         op = "sum" if avg else op
         results = list()
         for arr in arrays:
-            results.append(gpu_comm.all_reduce(arr, op))
+            results.append(comm.gpu.all_reduce(arr, op))
         for var, r in zip(shareds_registry.get_vars(shared_IDs), results):
             var.set_value(r)
     else:
@@ -341,17 +347,17 @@ def worker_cpu_coll(comm_ID):
     arrays = shareds_registry.get_arrays(shared_IDs)
     if comm_ID == exct.BROADCAST:
         for var in shared_vars:
-            var.set_value(cpu_comm.recv_pub())
+            var.set_value(comm.cpu.recv_pub())
     elif comm_ID == exct.SCATTER:
         for var in shared_vars:
-            var.set_value(cpu_comm.recv_pair())
+            var.set_value(comm.cpu.recv_pair())
     elif comm_ID in [exct.GATHER, exct.REDUCE]:
         for arr in arrays:
-            cpu_comm.send(arr)
+            comm.cpu.send(arr)
     elif comm_ID in [exct.ALL_GATHER, exct.ALL_REDUCE]:
         results = list()
         for arr in arrays:
-            results.append(cpu_comm.send_recv(arr))
+            results.append(comm.cpu.send_recv(arr))
         for var, r in zip(shared_vars, results):
             var.set_value(r)
     else:
@@ -367,7 +373,7 @@ def worker_synk_coll(comm_ID):
         for var, sd in zip(shared_vars, synk_datas):
             var.set_value(sd._data)
     elif comm_ID == exct.SCATTER:
-        my_inputs, _ = scatterer.get_my_inputs(len(shared_IDs))
+        my_inputs = scatterer.get_my_inputs(len(shared_IDs))
         for var, my_data in zip(shared_vars, my_inputs):
             var.set_value(my_data)
     else:

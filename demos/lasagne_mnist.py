@@ -23,6 +23,8 @@ import lasagne  # requires Theano flags: device=cpu, force_device=True
 
 import synkhronos as synk
 
+# import ipdb
+
 
 
 # ################## Download and prepare the MNIST dataset ##################
@@ -283,7 +285,7 @@ def main(model='mlp', num_epochs=500):
     params = lasagne.layers.get_all_params(network, trainable=True)
     updates = lasagne.updates.nesterov_momentum(
             loss, params, learning_rate=0.01, momentum=0.9)
-
+    # ipdb.set_trace()
     # Create a loss expression for validation/testing. The crucial difference
     # here is that we do a deterministic forward pass through the network,
     # disabling dropout layers.
@@ -298,11 +300,11 @@ def main(model='mlp', num_epochs=500):
     # Compile a function performing a training step on a mini-batch (by giving
     # the updates dictionary) and returning the corresponding training loss:
     # train_fn = theano.function([input_var, target_var], loss, updates=updates)
-    train_fn = synk.function([input_var, target_var], loss, updates=updates, collect_modes="gpu_reduce", reduce_ops="sum")
+    train_fn = synk.function([input_var, target_var], loss, updates=updates)
 
     # Compile a second function computing the validation loss and accuracy:
     # val_fn = theano.function([input_var, target_var], [test_loss, test_acc])
-    val_fn = synk.function([input_var, target_var], [test_loss, test_acc], collect_modes="reduce", reduce_ops="avg")
+    val_fn = synk.function([input_var, target_var], [test_loss, test_acc])
 
     # Send all functions and variables to workers (in the future, automatic)
     synk.distribute()

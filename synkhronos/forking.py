@@ -3,7 +3,7 @@ from .gpu_utils import get_n_gpu
 from .scatterer import scatterer
 from . import exct
 from .synchronize import build_syncs, give_syncs
-from .comms import connect_as_master
+from .comm import connect_as_master
 from .worker import worker_main, profiling_worker
 
 
@@ -66,4 +66,5 @@ def check_n_parallel(n_parallel, master_rank, n_gpu):
             n_parallel, n_gpu))
     print("Synkhronos attempting to use {} of {} detected GPUs...".format(
         n_parallel, n_gpu))
+    return n_parallel
 

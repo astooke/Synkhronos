@@ -2,8 +2,8 @@
 
 import multiprocessing as mp
 import numpy as np
-from ctypes import c_bool
-
+import ctypes
+# import ipdb
 
 from .util import struct
 
@@ -25,44 +25,43 @@ def build_syncs(n_parallel, max_n_var=100, max_dim=16):
         barrier=mp.Barrier(n_parallel - 1),
     )
     exct = struct(
-        quit=mp.RawValue(c_bool, False),
-        ID=mp.RawValue('i', 0),
-        sub_ID=mp.RawValue('i', 0),
+        quit=mp.RawValue(ctypes.c_bool, False),
+        ID=mp.RawValue(ctypes.c_uint, 0),
+        sub_ID=mp.RawValue(ctypes.c_uint, 0),
         barrier_in=mp.Barrier(n_parallel),
         barrier_out=mp.Barrier(n_parallel),
-        workers_OK=mp.Value(c_bool, True)  # (not Raw)
+        workers_OK=mp.Value(ctypes.c_bool, True)  # (not Raw)
     )
     coll = struct(
-        nccl=mp.RawValue(c_bool, True),
-        op=mp.RawArray('c', 4),
-        n_shared=mp.RawValue('i', 0),
-        vars=mp.RawArray('i', max_n_var),
-        datas=mp.RawArray('i', max_n_var),
-        shapes=np_mp_arr('i', max_n_var * max_dim).reshape(max_n_var, max_dim),
-        nd_up=mp.RawValue('i', 0),
+        nccl=mp.RawValue(ctypes.c_bool, True),
+        op=mp.RawArray(ctypes.c_char, 4),  # 'c'
+        n_shared=mp.RawValue(ctypes.c_uint, 0),
+        vars=mp.RawArray(ctypes.c_uint, max_n_var),
+        datas=mp.RawArray(ctypes.c_uint, max_n_var),
+        shapes=np_mp_arr(ctypes.c_uint, max_n_var * max_dim).reshape(max_n_var, max_dim),
+        nd_up=mp.RawValue(ctypes.c_uint, 0),
     )
     data = struct(
-        ID=mp.RawValue('I', 0),
-        dtype=mp.RawArray('c', 20),  # (by name)
-        ndim=mp.RawValue('I', 0),
-        shape=np_mp_arr('Q', max_dim),
-        tag=mp.RawValue('I', 0),
-        alloc_size=mp.RawValue('Q', 0),
+        ID=mp.RawValue('i', 0),
+        dtype=mp.RawArray(ctypes.c_char, 20),  # (by name)
+        ndim=mp.RawValue('i', 0),
+        minibatch=mp.RawValue(ctypes.c_bool, False),
+        shape=np_mp_arr('i', max_dim),
+        tag=mp.RawValue('i', 0),
+        alloc_size=mp.RawValue(ctypes.c_ulong, 0),
     )
     func = struct(
-        output_subset=mp.RawArray(c_bool, [True] * max_n_var),
-        collect_modes=mp.RawArray('B', max_n_var),
-        reduce_ops=mp.RawArray('B', max_n_var),
+        output_subset=mp.RawArray(ctypes.c_bool, [True] * max_n_var),
         n_slices=mp.RawValue('i', 0),
-        new_collect=mp.RawValue(c_bool, True),
+        is_new_subset=mp.RawValue(ctypes.c_bool, False),
     )
     scat = struct(
-        assign_idxs=np_mp_arr('Q', n_parallel + 1),
-        use_idxs_arr=mp.RawValue(c_bool, False),
-        tag=mp.RawValue('I', 0),
-        size=mp.RawValue('Q', 0),
+        assign_idxs=np_mp_arr(ctypes.c_ulong, n_parallel + 1),
+        use_idxs_arr=mp.RawValue(ctypes.c_bool, False),
+        tag=mp.RawValue(ctypes.c_uint, 0),
+        size=mp.RawValue(ctypes.c_ulong, 0),
         idxs_arr=None,  # (allocated later; only need if shuffling)
-        data_IDs=mp.RawArray('I', max_n_var),
+        data_IDs=mp.RawArray(ctypes.c_uint, max_n_var),
     )
 
     syncs = struct(
@@ -78,11 +77,11 @@ def build_syncs(n_parallel, max_n_var=100, max_dim=16):
 
 
 def give_syncs(syncs):
-    from . import comms as comm
+    from . import comm
     from . import exct
     from . import collectives as coll
-    from . import data
-    from . import function as func
+    from . import data_module as data
+    from . import function_module as func
     from . import function_builder as fbld
     from . import scatterer as scat
 

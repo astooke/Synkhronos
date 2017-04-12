@@ -1,8 +1,6 @@
 
-import numpy as np
-
 from .scatterer import scatterer
-from .data import Data
+from .data_module import Data
 
 
 ###############################################################################
@@ -12,30 +10,32 @@ from .data import Data
 ###############################################################################
 
 
-def data(var_or_arr=None, dtype=None, ndim=None, shape=None,
+def data(var=None, value=None, dtype=None, ndim=None, shape=None,
          minibatch=False, force_cast=False, oversize=1, name=None):
     """ Returns a Data object, which is the only type that synkhronos
     functions can receive for Theano inputs.
     """
-    if var_or_arr is not None:
+    if var is not None:
+        dtype = var.dtype
+        ndim = var.ndim
+    elif value is not None:
         try:
-            dtype = var_or_arr.dtype
-            ndim = var_or_arr.ndim
-        except AttributeError as exc:
-            raise exc("Input 'var_or_arr' must have dtype and ndim attributes.")
-    elif dtype is None or (ndim is None and shape is None):
-        raise TypeError("Must provide either 1) variable or array, or 2) dtype "
-            "and either ndim or shape.")
-    if shape is not None:
-        if ndim is not None:
-            if ndim != len(shape):
-                raise ValueError("Received inconsistent shape and ndim values.")
+            dtype = value.dtype
+            ndim = value.ndim
+        except AttributeError:
+            pass
+    if dtype is None or (ndim is None and shape is None):
+        raise TypeError("Must provide either 1) variable, 2) value "
+            "object with dtype and ndim attributes, or 3) dtype and "
+            "either ndim or shape.")
+    if ndim is None:
         ndim = len(shape)
+
     synk_data = Data(len(scatterer), dtype, ndim, minibatch, name)
     scatterer.append(synk_data)
 
-    if isinstance(var_or_arr, np.ndarray):
-        synk_data.set_value(var_or_arr, force_cast, oversize)
+    if value is not None:
+        synk_data.set_value(value, force_cast, oversize)
     elif shape is not None:
         synk_data.set_shape(shape, oversize)
     return synk_data

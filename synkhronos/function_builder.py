@@ -1,12 +1,13 @@
 
 import theano
 import pickle
+from collections import OrderedDict
 
-from .function import Function, WorkerFunction
+from .function_module import Function, WorkerFunction
 from .collectives import shareds_registry
 from . import exct
 from .util import PKL_FILE
-
+# import ipdb
 sync = None
 
 synk_functions = list()
@@ -56,6 +57,7 @@ def function(inputs, outputs=None, bcast_inputs=None, updates=None,
             givens=slc_givens,
             **kwargs,
         )
+    # ipdb.set_trace()
 
     synk_function = Function(ID=len(synk_functions),
                              theano_function=theano_function,
@@ -136,7 +138,7 @@ def process_outputs(outputs):
                 output_vars.append(o)
                 output_modes.append("avg")  # (default)
     else:
-        output_vars.append(o)
+        output_vars.append(outputs)
         output_modes.append("avg")
     check_collect_modes(output_modes)
     to_cpu = [not isinstance(var, GpuArrayVariable) for var in output_vars]
@@ -146,20 +148,27 @@ def process_outputs(outputs):
 
 def process_updates(updates):
     if updates is None:
-        return None, [], []
-    in_err = TypeError("Input 'updates' must be a list of tuples: "
-            "(var, new_value, [collect_mode])")
-    if not isinstance(updates, list): raise in_err
+        return None, [], [], []
+    in_err = TypeError("Input 'updates' should be a list of tuples: "
+            "(var, new_value [, slice_mode])")
     reg_updates = list()
     update_vars = list()
     update_gpu_outs = list()
     update_modes = list()
-    for u in updates:
-        if not isinstance(u, tuple) or len(u) not in (2, 3): raise in_err
-        reg_updates.append((u[0], u[1]))
-        update_vars.append(u[0])
-        update_gpu_outs.append(u[1].transfer(None))
-        update_modes.append(u[2] if len(u) == 3 else "avg")
+    if isinstance(updates, OrderedDict):  # (legacy only)
+        for k, v in updates.items():
+            reg_updates.append((k, v))
+            update_vars.append(k)
+            update_gpu_outs.append(v.transfer(None))
+            update_modes.append("avg")
+    else:
+        if not isinstance(updates, list): raise in_err
+        for u in updates:
+            if not isinstance(u, tuple) or len(u) not in (2, 3): raise in_err
+            reg_updates.append((u[0], u[1]))
+            update_vars.append(u[0])
+            update_gpu_outs.append(u[1].transfer(None))
+            update_modes.append(u[2] if len(u) == 3 else "avg")
     check_collect_modes(update_modes)
     return reg_updates, update_vars, update_gpu_outs, update_modes
 
@@ -171,7 +180,7 @@ def process_givens(givens, sliced_shareds):
     giv_err = TypeError("If using 'sliced_shareds', givens must be list of 2-tuples.")
     s_err = TypeError("Input 'sliced_shareds' must be list, elements are "
         "individual shared variables or 2-tuples: (var, given_var)")
-    givens = list() if givens is None else givens
+    if givens is None: givens = list()
     if not isinstance(givens, list):
         raise giv_err
     for g in givens:
@@ -191,9 +200,9 @@ def process_givens(givens, sliced_shareds):
         else:
             slc_givens.append((ss, ss[start:end]))
             slc_shareds.append(ss)
-    givens = None if len(givens) == 0 else givens
-    slc_givens = None if len(sliced_shareds) == 0 else givens
-    slc_idx_inputs = [] if slc_givens is None else [start, end]
+    if len(givens) == 0: givens = None
+    if len(slc_givens) == 0: slc_givens = None
+    slc_idx_inputs = [] if slc_shareds is None else [start, end]
     return givens, slc_givens, slc_idx_inputs, slc_shareds
 
 
@@ -224,4 +233,4 @@ def receive_distribution():
         assert f_info["ID"] == i
         synk_funcs.append(WorkerFunction(**f_info))
         shareds_registry.register_func(f_info["theano_function"])
-    return synk_functions
+    return synk_funcs
