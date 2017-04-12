@@ -245,17 +245,17 @@ class GpuCommMaster(GpuComm):
         return self.comm.all_gather(src=arr, nd_up=0)
 
     def reduce(self, arr, op, dest=None):
-        return self._reduce(arr, op, dest)
+        self._reduce(arr, op, dest, all_reduce=False)
 
     def all_reduce(self, arr, op, dest=None):
-        return self._reduce(arr, op, dest)
+        self._reduce(arr, op, dest, all_reduce=True)
 
-    def _reduce(self, arr, op, dest=None):
+    def _reduce(self, arr, op, dest=None, all_reduce=True):
         avg = op == "avg"
-        op = "sum" if avg else op
-        r = self.comm.reduce(src=arr, op=op, dest=dest)
-        if dest is not None:
-            r = dest
+        if avg: op = "sum"
+        reduce_method = self.comm.all_reduce if all_reduce else self.comm.reduce
+        r = reduce_method(src=arr, op=op, dest=dest)
+        if dest is not None: r = dest
         if avg:
             avg_f = reducers.get_avg_f(r)
             r = avg_f(r, self.avg_fac)
@@ -291,12 +291,12 @@ class GpuCommWorker(GpuComm):
         return self.comm.all_gather(src=arr, nd_up=0)
 
     def reduce(self, arr, op):
-        op = "sum" if op == "avg" else op
+        if op == "avg": op = "sum"
         self.comm.reduce(src=arr, op=op, root=self.master_rank)
 
     def all_reduce(self, arr, op):
         avg = op == "avg"
-        op = "sum" if avg else op
+        if avg: op = "sum"
         self.comm.all_reduce(src=arr, op=op, dest=arr)
         if avg:
             avg_f = reducers.get_avg_f(arr)
