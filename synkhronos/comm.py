@@ -245,10 +245,10 @@ class GpuCommMaster(GpuComm):
         return self.comm.all_gather(src=arr, nd_up=0)
 
     def reduce(self, arr, op, dest=None):
-        self._reduce(arr, op, dest, all_reduce=False)
+        return self._reduce(arr, op, dest, all_reduce=False)
 
     def all_reduce(self, arr, op, dest=None):
-        self._reduce(arr, op, dest, all_reduce=True)
+        return self._reduce(arr, op, dest, all_reduce=True)
 
     def _reduce(self, arr, op, dest=None, all_reduce=True):
         avg = op == "avg"

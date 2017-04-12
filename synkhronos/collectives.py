@@ -325,13 +325,10 @@ def worker_gpu_coll(comm_ID):
             var.set_value(r)
     elif comm_ID == exct.REDUCE:
         op = sync.op.value.decode(encoding='utf-8')
-        op = "sum" if op == "avg" else op
         for arr in arrays:
             comm.gpu.reduce(arr, op)
     elif comm_ID == exct.ALL_REDUCE:
         op = sync.op.value.decode(encoding='utf-8')
-        avg = op == "avg"
-        op = "sum" if avg else op
         results = list()
         for arr in arrays:
             results.append(comm.gpu.all_reduce(arr, op))
