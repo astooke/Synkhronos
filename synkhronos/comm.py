@@ -276,7 +276,7 @@ class GpuCommWorker(GpuComm):
             op = "sum" if op == "avg" else op
             # NOTE: all_reduce needed for for NCCL bug in reduce.
             # self.comm.reduce(src=arr, op=op, root=self.master_rank)
-            self.comm.all_reduce(src=arr, op=op, root=self.master_rank, dest=arr)
+            self.comm.all_reduce(src=arr, op=op, dest=arr)
 
     ###########################################################################
     #                   Support for Shared Variable Collectives               #
