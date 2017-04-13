@@ -305,7 +305,7 @@ def worker_gpu_coll(comm_ID):
     arrays = shareds_registry.get_arrays(shared_IDs)
     if comm_ID == exct.BROADCAST:
         shared_vars = shareds_registry.get_vars(shared_IDs)
-        for i, (arr, var) in enumerate(arrays, shared_vars):
+        for i, (arr, var) in enumerate(zip(arrays, shared_vars)):
             shape = tuple(sync.shapes[i][:var.ndim])
             if shape != arr.shape:
                 arr = alloc_gpu_arr(arr.dtype, shape)

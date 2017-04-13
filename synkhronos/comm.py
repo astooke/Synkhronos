@@ -236,7 +236,7 @@ class GpuCommMaster(GpuComm):
     #                  Support for Shared Variable Collectives                #
 
     def broadcast(self, arr):
-        self.comm.broadcast(src=arr)
+        self.comm.broadcast(arr)
 
     def gather(self, arr, nd_up=1):
         return self.comm.all_gather(src=arr, nd_up=nd_up)
