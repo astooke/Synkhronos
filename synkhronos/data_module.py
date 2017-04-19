@@ -1,7 +1,8 @@
 
 import numpy as np
+from ctypes import c_char
 
-from .shmemarray import ShmemRawArray, NP_TO_C_TYPE
+from .shmemarray import ShmemRawArray
 from .util import PREFIX
 from . import exct
 
@@ -22,10 +23,8 @@ class BaseData(object):
 
     def __init__(self, ID, dtype, ndim, minibatch):
         self._ID = ID
-        self._ctype = NP_TO_C_TYPE.get(dtype, None)
         self._dtype = dtype.name if hasattr(dtype, "name") else dtype
-        if self._ctype is None:
-            raise TypeError("Unsupported numpy dtype: {}".format(dtype))
+        self._itemsize = np.dtype(self._dtype).itemsize
         self._ndim = ndim
         self._data = np.empty([0] * ndim, dtype=dtype)
         self._minibatch = minibatch
@@ -36,8 +35,10 @@ class BaseData(object):
 
     def _alloc_shmem(self, size, tag):
         tag = PREFIX + "_data_" + str(self._ID) + "_" + str(tag)
-        self._shmem = ShmemRawArray(self._ctype, size, tag, self._create)
-        self._np_shmem = np.ctypeslib.as_array(self._shmem)
+        nbytes = size * self._itemsize
+        self._shmem = ShmemRawArray(c_char, nbytes, tag, self._create)
+        self._np_shmem = np.frombuffer(self._shmem, dtype=self._dtype, count=size)
+        # self._np_shmem = np.ctypeslib.as_array(self._shmem)
         self._alloc_size = size
 
     def _shape_data(self, shape):

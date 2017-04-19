@@ -97,23 +97,8 @@ def ShmemRawArray(typecode_or_type, size_or_initializer, tag, create=True):
 #                       New Additions  (by Adam)                              #
 
 
-NP_TO_C_TYPE = {'float64': ctypes.c_double, np.dtype('float64'): ctypes.c_double,
-                'float32': ctypes.c_float, np.dtype('float32'): ctypes.c_float,
-                'float16': None, np.dtype('float16'): None,
-                'int8': ctypes.c_byte, np.dtype('int8'): ctypes.c_byte,
-                'int16': ctypes.c_short, np.dtype('int16'): ctypes.c_short,
-                'int32': ctypes.c_int, np.dtype('int32'): ctypes.c_int,
-                'int64': ctypes.c_longlong, np.dtype('int64'): ctypes.c_longlong,
-                'uint8': ctypes.c_ubyte, np.dtype('uint8'): ctypes.c_ubyte,
-                'uint16': ctypes.c_ushort, np.dtype('uint16'): ctypes.c_ushort,
-                'uint32': ctypes.c_uint, np.dtype('uint32'): ctypes.c_uint,
-                'uint64': ctypes.c_ulonglong, np.dtype('uint64'): ctypes.c_ulonglong,
-                }
-
-
 def NpShmemArray(dtype, shape, tag, create=True):
-    ctype = NP_TO_C_TYPE.get(dtype, None)
-    if ctype is None:
-        raise ValueError("Unsupported numpy dtype: ", dtype)
-    shmem = ShmemRawArray(ctype, int(np.prod(shape)), tag, create)
-    return np.ctypeslib.as_array(shmem).reshape(shape)
+    size = int(np.prod(shape))
+    nbytes = size * np.dtype(dtype).itemsize
+    shmem = ShmemRawArray(ctypes.c_char, nbytes, tag, create)
+    return np.from_buffer(shmem, dtype=dtype, count=size).reshape(shape)
