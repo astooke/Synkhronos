@@ -10,7 +10,7 @@ def make_avg_f(dtype, ndim):
     t_type = T.TensorType(dtype=dtype, broadcastable=[False] * ndim)
     x = t_type('accum').transfer(None)
     z = x * y
-    return theano.function([x, y], z.transfer(None), name='avg')
+    return theano.function([x, y], z.transfer(None), name='avg', allow_input_downcast=True)
 
 
 def make_reduce_f(mode, dtype, ndim):
@@ -25,7 +25,7 @@ def make_reduce_f(mode, dtype, ndim):
         y_pad = T.shape_padaxis(y, axis=0)
         z = T_op(T.concatenate([x_pad, y_pad], axis=0), axis=0)
     name = mode + "_" + str(dtype)
-    return theano.function([x, y], z.transfer(None), name=name)
+    return theano.function([x, y], z.transfer(None), name=name, allow_input_downcast=True)
 
 
 class Reducers(object):
