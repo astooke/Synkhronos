@@ -101,4 +101,4 @@ def NpShmemArray(dtype, shape, tag, create=True):
     size = int(np.prod(shape))
     nbytes = size * np.dtype(dtype).itemsize
     shmem = ShmemRawArray(ctypes.c_char, nbytes, tag, create)
-    return np.from_buffer(shmem, dtype=dtype, count=size).reshape(shape)
+    return np.frombuffer(shmem, dtype=dtype, count=size).reshape(shape)

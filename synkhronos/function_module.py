@@ -22,33 +22,32 @@ sync = None
 
 class BaseFunction(object):
 
-    def __init__(self, ID, theano_function, sliced_function,
-                 n_scatter, n_bcast, slc_shareds, update_vars,
-                 collect_modes):
+    def __init__(self, ID, functions, n_scatter, n_bcast, slc_shareds,
+                 update_vars, collect_modes):
         self._ID = ID
-        self._f = theano_function
-        self._f.trust_input = True
-        self._sliced_f = sliced_function
-        self._sliced_f.trust_input = True  # NOTE: avoids bug slowdown unpickled
+        self._functions = functions
+        for f in self._functions.values():
+            f.trust_input = True  # NOTE: avoids bug slowdown unpickled
         self._n_scat = n_scatter
         self._n_bcast = n_bcast
         self._slc_shareds = slc_shareds
+        self._n_slc_sh = len(slc_shareds)
         self._update_vars = update_vars
         self._collect_modes = collect_modes
         self._n_input = n_scatter + n_bcast
-        self._n_output = len(theano_function.outputs)
-        self._n_slc_updates = len(sliced_function.outputs) - self._n_output
+        self._n_output = len(functions.theano_function.outputs)
+        sliced_f = functions.sliced if hasattr(functions, "sliced") else functions.f
+        self._n_slc_updates = len(sliced_f.outputs) - self._n_output
         self._slc_out_set = list(range(self._n_output, self._n_slc_updates))
         self._full_output_set = list(range(self._n_output))
         self._current_output_set = self._full_output_set
         self._define_collect(collect_modes)
-        self._set_reduce_fs(collect_modes, sliced_function.outputs)
+        self._set_reduce_fs(collect_modes, sliced_f.outputs)
 
     def _get_distro_info(self):
         info = dict(
             ID=self._ID,
-            theano_function=self._f,
-            sliced_function=self._sliced_f if self._sliced_f is not self._f else None,
+            functions=self._functions,
             n_scatter=self._n_scat,
             n_bcast=self._n_bcast,
             slc_shareds=self._slc_shareds,
@@ -82,18 +81,85 @@ class BaseFunction(object):
     def get_shared(self):
         return self._f.get_shared()
 
+    def _check_batch_s(self, batch_s, scat_inputs):
+        if not self._slc_shareds:
+            return
+        lengths = [s.container.data.shape[0] for s in self._slc_shareds]
+        if batch_s is None:
+            if not lengths.count(lengths[0]) == len(lengths):
+                raise ValueError("No batch_s input but had different length "
+                    "sliceable shareds. Vars: {}, Lengths: {}".format(
+                        self._slc_shareds, lengths))
+        elif isinstance(batch_s, np.ndarray):
+            length = batch_s.size
+            if batch_s.max() > min(lengths):
+                raise ValueError("Had batch_s explicit index requested, {}, "
+                    "out of range of at least one sliceable shared variable. "
+                    "Vars: {}, Lengths: {}".format(batch_s.max(),
+                        self._slc_shareds, lengths))
+        elif isinstance(batch_s, slice):
+            length = batch_s.stop - batch_s.start
+            if batch_s.start > min(lengths):
+                raise ValueError("Had batch_s slice.start requested, {}, "
+                    "higher than the length of at least one sliceable shared "
+                    "variable. Vars: {}, Lengths: {}".format(batch_s.start,
+                        self._slc_shareds, lengths))
+            if batch_s.stop > min(lengths):
+                raise ValueError("Had batch_s slice.stop requested, {}, higher "
+                    "than the length of at least one sliceable shared variable. "
+                    " Vars: {}, Lengths: {}".format(batch_s.end,
+                        self._slc_shareds, lengths))
+        if scat_inputs:
+            if length != len(scat_inputs[0]):
+                raise ValueError("Had both scattered inputs and sliceable "
+                    "shareds, but their requested lengths (after applying batch "
+                    "and batch_s) did not match. scattered length: {}, shared "
+                    "length: {}".format(len(scat_inputs[0]), length))
+
+    # def _run_function_old(self, num_slices, output_subset):
+    #     my_inputs = scatterer.get_my_inputs(self._n_scat, self._n_bcast)
+    #     my_results = \
+    #         self._run_sliced_f(my_inputs, num_slices, output_subset) \
+    #         if num_slices > 1 else \
+    #         self._f(*my_inputs, output_subset=output_subset)
+    #     return my_results
+
     def _run_function(self, num_slices, output_subset):
         my_inputs = scatterer.get_my_inputs(self._n_scat, self._n_bcast)
-        my_results = \
-            self._run_sliced_f(my_inputs, num_slices, output_subset) \
-            if num_slices > 1 else \
-            self._f(*my_inputs, output_subset=output_subset)
+        batch_s = scatterer.get_my_batch_s(self._n_slc_sh)
+        self._check_batch_s(batch_s, my_inputs[:self._n_scat])
+        if num_slices > 1:
+            my_results = self._run_sliced_f(my_inputs, batch_s, num_slices, output_subset)
+        elif batch_s is None:
+            my_results = \
+                self._functions.f(*my_inputs, output_subset=output_subset)
+        elif isinstance(batch_s, slice):
+            my_results = \
+                self._functions.slc_in(*my_inputs, batch_s, output_subset=output_subset)
+        elif isinstance(batch_s, np.ndarray):
+            my_results = \
+                self._functions.lst_in(*my_inputs, batch_s, output_subset=output_subset)
+        else:
+            raise RuntimeError("Unrecognized batch_s type: {}".format(type(batch_s)))
         return my_results
 
-    def _run_sliced_f(self, my_inputs, num_slices, output_subset):
+    def _run_sliced_f(self, my_inputs, batch_s, num_slices, output_subset):
+        if batch_s is None:
+            if hasattr(self._functions, "sliced"):
+                sliced_f = self._functions.sliced
+            elif hasattr(self._functions, "sliced_slc_in"):
+                sliced_f = self._functions.sliced_slc_in
+            else:
+                sliced_f = self._functions.f
+        elif isinstance(batch_s, slice):
+            sliced_f = self._functions.sliced_slc_in
+        elif isinstance(batch_s, np.ndarray):
+            sliced_f = self._functions.sliced_lst_in
+        else:
+            raise RuntimeError("Unrecognized batch_s type: {}".format(type(batch_s)))
         accum_rs = None
-        for sliced_inputs in self._slice_inputs(my_inputs, num_slices):
-            sliced_rs = self._sliced_f(*sliced_inputs, output_subset=output_subset)
+        for sliced_inputs in self._slice_inputs(my_inputs, batch_s, num_slices):
+            sliced_rs = sliced_f(*sliced_inputs, output_subset=output_subset)
             accum_rs = self._accum_my_results(accum_rs, sliced_rs)
         if any(self._collect.avgs):
             self._avg_my_results(accum_rs, num_slices)
@@ -102,6 +168,19 @@ class BaseFunction(object):
         for var, update in zip(self._update_vars, my_updates):
             var.container.data = update
         return my_results  # (always a list)
+
+    # def _run_sliced_f_old(self, my_inputs, num_slices, output_subset):
+    #     accum_rs = None
+    #     for sliced_inputs in self._slice_inputs(my_inputs, num_slices):
+    #         sliced_rs = self._sliced_f(*sliced_inputs, output_subset=output_subset)
+    #         accum_rs = self._accum_my_results(accum_rs, sliced_rs)
+    #     if any(self._collect.avgs):
+    #         self._avg_my_results(accum_rs, num_slices)
+    #     my_results = accum_rs[:len(self._current_output_set)]
+    #     my_updates = accum_rs[len(self._current_output_set):]
+    #     for var, update in zip(self._update_vars, my_updates):
+    #         var.container.data = update
+    #     return my_results  # (always a list)
 
     def _accum_my_results(self, accum_rs, sliced_rs):
         if accum_rs is None:
@@ -121,21 +200,21 @@ class BaseFunction(object):
                 accum_rs[i] = f(r, inv_num)
         return accum_rs
 
-    def _slice_inputs(self, inputs, num_slices):
+    def _slice_inputs(self, inputs, batch_s, num_slices):
         length = None
         if self._n_scat > 0:
-            length = len(inputs[0])
+            length = len(inputs[0])  # length of scattered inputs checked previously
         if self._slc_shareds:
-            s_lengths = [s.container.data.shape[0] for s in self._slc_shareds]
-            s_len = s_lengths[0]
-            if s_lengths.count(s_len) != len(s_lengths):
-                raise ValueError("Had different lengths for sliceable "
-                    "shareds: {}, {}".format(self._slc_shareds, s_lengths))
-            if length is not None and s_len != length:
-                raise ValueError("Had different lengths for sliceable shareds "
-                    "{} vs sliceable inputs {}".format(s_len, length))
+            if batch_s is None:
+                s_length = self._slc_shareds[0].container.data.shape[0]  # length checked previously
+            elif isinstance(batch_s, slice):
+                s_length = batch_s.stop - s.start
+            elif isinstance(batch_s, np.ndarray):
+                s_length = batch_s.size
             if length is None:
-                length = s_len
+                length = s_length
+            else:
+                assert s_length == length  # (should already be enforced)
         edges = np.linspace(0, length, num_slices + 1, dtype='int64')
         for slc in [slice(*edges[i:i + 2]) for i in range(num_slices)]:
             sliced_inputs = list()
@@ -144,8 +223,43 @@ class BaseFunction(object):
             for inpt in inputs[self._n_scat:]:
                 sliced_inputs.append(inpt)
             if self._slc_shareds:
-                sliced_inputs += [np.array(slc.start), np.array(slc.stop)]
+                if batch_s is None:
+                    start = np.array(slc.start)
+                    stop = np.array(slc.stop)
+                    sliced_inputs += [start, stop]
+                elif isinstance(batch_s, np.ndarray):
+                    sliced_inputs.append(batch_s[slc])
+                elif isinstance(batch_s, slice):
+                    start = np.array(batch_s.start + slc.start)
+                    stop = np.array(batch_s.start + slc.stop)
+                    sliced_inputs += [start, stop]
             yield tuple(sliced_inputs)
+
+    # def _slice_inputs_old(self, inputs, num_slices):
+    #     length = None
+    #     if self._n_scat > 0:
+    #         length = len(inputs[0])
+    #     if self._slc_shareds:
+    #         s_lengths = [s.container.data.shape[0] for s in self._slc_shareds]
+    #         s_len = s_lengths[0]
+    #         if s_lengths.count(s_len) != len(s_lengths):
+    #             raise ValueError("Had different lengths for sliceable "
+    #                 "shareds: {}, {}".format(self._slc_shareds, s_lengths))
+    #         if length is not None and s_len != length:
+    #             raise ValueError("Had different lengths for sliceable shareds "
+    #                 "{} vs sliceable inputs {}".format(s_len, length))
+    #         if length is None:
+    #             length = s_len
+    #     edges = np.linspace(0, length, num_slices + 1, dtype='int64')
+    #     for slc in [slice(*edges[i:i + 2]) for i in range(num_slices)]:
+    #         sliced_inputs = list()
+    #         for inpt in inputs[:self._n_scat]:
+    #             sliced_inputs.append(inpt[slc])
+    #         for inpt in inputs[self._n_scat:]:
+    #             sliced_inputs.append(inpt)
+    #         if self._slc_shareds:
+    #             sliced_inputs += [np.array(slc.start), np.array(slc.stop)]
+    #         yield tuple(sliced_inputs)
 
 
 ###############################################################################
@@ -164,7 +278,7 @@ class WorkerFunction(BaseFunction):
         3. Send results back to master.
         """
         num_slices, output_subset = self.receive_f_info()
-        if self._n_scat > 0:
+        if self._n_scat > 0 or self._n_slc_sh > 0:
             scatterer.check_idxs_alloc()
         my_results = self._run_function(num_slices, output_subset)
         self.send_results(my_results)
@@ -245,11 +359,15 @@ class FunctionHelpers(BaseFunction):
             ordered_inputs[idx] = arg
         return tuple(ordered_inputs)
 
-    def _share_input_data(self, synk_inputs, batch):
+    def _share_input_data(self, synk_inputs, batch, batch_s):
         if self._n_input > 0:
             check_synk_inputs(synk_inputs, self._input_vars)
             scatterer.assign_inputs(synk_inputs, batch, self._n_scat)
         # TODO: handle batching for sliceable shared variables
+        if self._n_slc_sh > 0:
+            scatterer.assign_batch_s(batch_s)
+        elif batch_s is not None:
+            raise TypeError("Had param 'batch_s', but no sliceable shareds.")
 
     def _update_f_info(self, num_slices, output_subset):
         if num_slices < 1 or int(num_slices) != num_slices:
@@ -342,8 +460,8 @@ def collect(arr, op, nccl=True):
 class Function(FunctionHelpers):
     """ Class of instances returned by ``synkhronos.function()``.  """
 
-    def __call__(self, *args, output_subset=None, batch=None, num_slices=1,
-                **kwargs):
+    def __call__(self, *args, output_subset=None, batch=None, batch_s=None,
+                 num_slices=1, **kwargs):
         """ Callable as in Theano function.
 
         When called, Synkhronos functions:
@@ -364,7 +482,7 @@ class Function(FunctionHelpers):
         """
         exct.check_active()
         ordered_inputs = self._order_inputs(args, kwargs)
-        self._share_input_data(ordered_inputs, batch)
+        self._share_input_data(ordered_inputs, batch, batch_s)
         self._update_f_info(num_slices, output_subset)
         exct.launch(exct.FUNCTION, self._ID)
         my_results = self._run_function(num_slices, output_subset)

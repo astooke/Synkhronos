@@ -31,7 +31,7 @@ def fork(n_parallel=None, use_gpu=True, master_rank=0,
     give_syncs(syncs)
     if use_gpu:
         exct.init_gpus(master_rank, n_parallel)
-    scatterer.assign_rank(n_parallel, master_rank, create=True)
+    scatterer.assign_rank(n_parallel, master_rank)
     connect_as_master(n_parallel, master_rank, master_rank, use_gpu)
 
     return n_parallel

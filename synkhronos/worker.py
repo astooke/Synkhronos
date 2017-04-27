@@ -21,7 +21,7 @@ def manage_data(data_op, sync_data):
     if data_op == exct.CREATE:
         scatterer.append(WorkerData(len(scatterer)))
         return
-    synk_data = scatterer.get_data(sync_data.ID.value)
+    synk_data = scatterer[sync_data.ID.value]
     if data_op == exct.ALLOC:
         synk_data.alloc_shmem()
         synk_data.shape_data()
@@ -50,7 +50,7 @@ def worker_main(rank, n_parallel, master_rank, use_gpu, syncs):
     give_syncs(syncs)
     if use_gpu:
         exct.init_gpus(rank)
-    scatterer.assign_rank(n_parallel, rank, create=False)
+    scatterer.assign_rank(n_parallel, rank)
     connect_as_worker(n_parallel, rank, master_rank, use_gpu)
     atexit.register(exct.worker_error_close)
 

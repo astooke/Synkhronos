@@ -62,6 +62,12 @@ def build_syncs(n_parallel, max_n_var=100, max_dim=16):
         size=mp.RawValue(ctypes.c_ulong, 0),
         idxs_arr=None,  # (allocated later; only need if shuffling)
         data_IDs=mp.RawArray(ctypes.c_uint, max_n_var),
+        use_batch_s=mp.RawValue(ctypes.c_bool, False),
+        assign_idxs_s=np_mp_arr(ctypes.c_ulong, n_parallel * 2).reshape(n_parallel, 2),
+        use_idxs_arr_s=mp.RawValue(ctypes.c_bool, False),
+        tag_s=mp.RawValue(ctypes.c_uint, 0),
+        size_s=mp.RawValue(ctypes.c_ulong, 0),
+        idxs_arr_s=None,
     )
 
     syncs = struct(

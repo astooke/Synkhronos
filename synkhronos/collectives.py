@@ -7,7 +7,6 @@ from .gpu_utils import alloc_gpu_arr
 from . import comm
 from . import exct
 
-
 __all__ = ["broadcast", "scatter", "gather", "all_gather", "reduce", "all_reduce"]
 
 sync = None  # (assigned later by master)

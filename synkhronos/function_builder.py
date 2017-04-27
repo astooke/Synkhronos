@@ -1,12 +1,13 @@
 
 import theano
+import theano.tensor as T
 import pickle
 from collections import OrderedDict
 
 from .function_module import Function, WorkerFunction
 from .collectives import shareds_registry
 from . import exct
-from .util import PKL_FILE
+from .util import struct, PKL_FILE
 # import ipdb
 sync = None
 
@@ -21,8 +22,7 @@ synk_functions = list()
 
 
 def function(inputs, outputs=None, bcast_inputs=None, updates=None,
-             givens=None, sliceable_shareds=None,
-             **kwargs):
+             givens=None, sliceable_shareds=None, **kwargs):
     if not exct.state.forked:
         raise RuntimeError("Must fork before making functions for GPU.")
     if exct.state.distributed:
@@ -34,37 +34,71 @@ def function(inputs, outputs=None, bcast_inputs=None, updates=None,
     if not isinstance(bcast_inputs, list):
         raise TypeError("Input 'bcast_inputs' must be list if not None.")
 
-    gpu_outputs, to_cpu, output_modes = \
-        process_outputs(outputs)
-    reg_updates, update_vars, slc_update_gpu_outs, update_modes = \
-        process_updates(updates)
-    reg_givens, slc_givens, slc_idx_inputs, slc_shareds = \
-        process_givens(givens, sliceable_shareds)
+    reg_outputs, gpu_outputs, to_cpu, output_modes = process_outputs(outputs)
+    updates, update_vars, sliced_update_outs, update_modes = process_updates(updates)
+
 
     theano_function = theano.function(
+            inputs=inputs + bcast_inputs,
+            outputs=reg_outputs,
+            updates=updates,
+            givens=givens,
+            **kwargs,
+    )
+
+    functions = struct(theano_function=theano_function)
+    functions["f"] = theano.function(
         inputs=inputs + bcast_inputs,
-        outputs=gpu_outputs,  # a list, so function always returns list
-        updates=reg_updates,
-        givens=reg_givens,
+        outputs=gpu_outputs,
+        updates=updates,
+        givens=givens,
         **kwargs,
     )
-    if len(update_vars) == 0 and slc_shareds is None:
-        sliced_function = theano_function
-    else:
-        sliced_function = theano.function(
-            inputs=inputs + bcast_inputs + slc_idx_inputs,
-            outputs=gpu_outputs + slc_update_gpu_outs,
+
+    if not updates and not sliceable_shareds:
+        functions["sliced"] = theano.function(
+            inputs=inputs + bcast_inputs,
+            outputs=gpu_outputs + sliced_update_outs,
+            givens=givens,
+            **kwargs,
+        )
+
+    if sliceable_shareds:
+        slc_givens, lst_givens, slc_inputs, lst_input = \
+            process_givens(givens, sliceable_shareds, theano_function.get_shared())
+
+        functions["slc_in"] = theano.function(
+            inputs=inputs + bcast_inputs + slc_inputs,
+            outputs=gpu_outputs,
+            updates=updates,
             givens=slc_givens,
             **kwargs,
         )
-    # ipdb.set_trace()
+        functions["lst_in"] = theano.function(
+            inputs=inputs + bcast_inputs + [lst_input],
+            outputs=gpu_outputs,
+            updates=updates,
+            givens=lst_givens,
+            **kwargs,
+        )
+        functions["sliced_slc_in"] = theano.function(
+            inputs=inputs + bcast_inputs + slc_inputs,
+            outputs=gpu_outputs + sliced_update_outs,
+            givens=slc_givens,
+            **kwargs,
+        )
+        functions["sliced_lst_in"] = theano.function(
+            inputs=inputs + bcast_inputs + [lst_input],
+            outputs=gpu_outputs + sliced_update_outs,
+            givens=lst_givens,
+            **kwargs,
+        )
 
     synk_function = Function(ID=len(synk_functions),
-                             theano_function=theano_function,
-                             sliced_function=sliced_function,
+                             functions=functions,
                              inputs=inputs,
                              bcast_inputs=bcast_inputs,
-                             slc_shareds=slc_shareds,
+                             slc_shareds=sliceable_shareds,
                              update_vars=update_vars,
                              to_cpu=to_cpu,
                              collect_modes=output_modes + update_modes,
@@ -119,7 +153,7 @@ COLLECT_MODES = ["avg", "sum", "prod", "min", "max", "gather",
 
 def process_outputs(outputs):
     if outputs is None:
-        return [], [], []
+        return None, None, [], []
     output_vars = list()
     output_modes = list()
     from theano.gpuarray.type import GpuArrayVariable
@@ -143,7 +177,7 @@ def process_outputs(outputs):
     check_collect_modes(output_modes)
     to_cpu = [not isinstance(var, GpuArrayVariable) for var in output_vars]
     gpu_vars = [var.transfer(None) for var in output_vars]
-    return gpu_vars, to_cpu, output_modes
+    return output_vars, gpu_vars, to_cpu, output_modes
 
 
 def process_updates(updates):
@@ -173,37 +207,74 @@ def process_updates(updates):
     return reg_updates, update_vars, update_gpu_outs, update_modes
 
 
-def process_givens(givens, sliced_shareds):
-    if sliced_shareds is None:
-        return givens, None, [], []
-    import theano.tensor as T
-    giv_err = TypeError("If using 'sliced_shareds', givens must be list of 2-tuples.")
-    s_err = TypeError("Input 'sliced_shareds' must be list, elements are "
-        "individual shared variables or 2-tuples: (var, given_var)")
-    if givens is None: givens = list()
-    if not isinstance(givens, list):
-        raise giv_err
-    for g in givens:
-        if not isinstance(g, tuple) or len(g) != 2:
-            raise giv_err
-    if not isinstance(sliced_shareds, list): raise s_err
-    start = T.lscalar()
-    end = T.lscalar()
-    slc_givens = list()
-    slc_shareds = list()
-    for ss in sliced_shareds:
-        if isinstance(ss, tuple):
-            if len(ss) != 2: raise s_err
-            givens.append(ss)
-            slc_givens.append((ss[0], ss[1][start:end]))
-            slc_shareds.append(ss[1])
+def process_givens(givens, sliceable_shareds, f_shareds):
+    if givens is None:
+        givens = list()
+    if isinstance(givens, (list, tuple)):
+        givens = {g[0]: g[1] for g in givens}
+    if not isinstance(sliceable_shareds, list):
+        raise TypeError("Optional param `sliceable_shareds` must be list.")
+    for var in sliceable_shareds:
+        if var not in f_shareds:
+            raise ValueError("At least one of sliceable_shareds not in "
+                "function's shareds: sliceable: {}, function's: {}".format(
+                    sliceable_shareds, f_shareds))
+    start_input = T.lscalar('start')
+    stop_input = T.lscalar('stop')
+    slc_inputs = [start_input, stop_input]
+    lst_input = T.lvector('lst')
+    slc_givens = dict()
+    lst_givens = dict()
+    remaining_ss = list(sliceable_shareds)
+    for k, v in givens.items():
+        if v in sliceable_shareds:
+            slc_givens[k] = v[start_input:stop_input].transfer(None)
+            lst_givens[k] = v[lst_input].transfer(None)  # NOTE: needed on gpu subtensor, probably just theano bug
+            if v in remaining_ss:
+                remaining_ss.pop(remaining_ss.index(v))
         else:
-            slc_givens.append((ss, ss[start:end]))
-            slc_shareds.append(ss)
-    if len(givens) == 0: givens = None
-    if len(slc_givens) == 0: slc_givens = None
-    slc_idx_inputs = [] if slc_shareds is None else [start, end]
-    return givens, slc_givens, slc_idx_inputs, slc_shareds
+            slc_givens[k] = v
+            lst_givens[k] = v
+    for var in remaining_ss:
+        slc_givens[var] = var[start_input:stop_input].transfer(None)
+        lst_givens[var] = var[lst_input].transfer(None)
+    # FIXME:  might not replace everywhere var is used, for instance if it is
+    # used in a given but is already an ancestor to another part of the graph,
+    # only the given will have the var replaced.
+    return slc_givens, lst_givens, slc_inputs, lst_input
+
+
+# def process_givens_old(givens, sliced_shareds):
+#     if sliced_shareds is None:
+#         return givens, None, [], []
+#     import theano.tensor as T
+#     giv_err = TypeError("If using 'sliced_shareds', givens must be list of 2-tuples.")
+#     s_err = TypeError("Input 'sliced_shareds' must be list, elements are "
+#         "individual shared variables or 2-tuples: (var, given_var)")
+#     if givens is None: givens = list()
+#     if not isinstance(givens, list):
+#         raise giv_err
+#     for g in givens:
+#         if not isinstance(g, tuple) or len(g) != 2:
+#             raise giv_err
+#     if not isinstance(sliced_shareds, list): raise s_err
+#     start = T.lscalar()
+#     end = T.lscalar()
+#     slc_givens = list()
+#     slc_shareds = list()
+#     for ss in sliced_shareds:
+#         if isinstance(ss, tuple):
+#             if len(ss) != 2: raise s_err
+#             givens.append(ss)
+#             slc_givens.append((ss[0], ss[1][start:end]))
+#             slc_shareds.append(ss[1])
+#         else:
+#             slc_givens.append((ss, ss[start:end]))
+#             slc_shareds.append(ss)
+#     if len(givens) == 0: givens = None
+#     if len(slc_givens) == 0: slc_givens = None
+#     slc_idx_inputs = [] if slc_shareds is None else [start, end]
+#     return givens, slc_givens, slc_idx_inputs, slc_shareds
 
 
 def check_collect_modes(collect_modes):
@@ -228,9 +299,7 @@ def receive_distribution():
     synk_funcs = list()
     shareds_registry.reset()
     for i, f_info in enumerate(distribution):
-        if f_info["sliced_function"] is None:  # (avoided duplicate pickling)
-            f_info["sliced_function"] = f_info["theano_function"]
         assert f_info["ID"] == i
         synk_funcs.append(WorkerFunction(**f_info))
-        shareds_registry.register_func(f_info["theano_function"])
+        shareds_registry.register_func(f_info["functions"]["theano_function"])
     return synk_funcs
