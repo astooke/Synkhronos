@@ -267,7 +267,7 @@ def assign_idxs_s(batch_s, n_parallel):
     elif isinstance(batch_s, np.ndarray):
         idxs = np.tile([0, batch_s.size], [n_parallel, 1])
     elif isinstance(batch_s, slice):
-        idxs = np.tile([batch_s.start, batch_s.end], [n_parallel, 1])
+        idxs = np.tile([batch_s.start, batch_s.stop], [n_parallel, 1])
     sync.assign_idxs_s[:] = idxs
     # NOTE: different from scattering inputs; each worker has distinct pair idxs.
 

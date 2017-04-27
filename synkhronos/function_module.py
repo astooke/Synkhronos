@@ -134,8 +134,10 @@ class BaseFunction(object):
             my_results = \
                 self._functions.f(*my_inputs, output_subset=output_subset)
         elif isinstance(batch_s, slice):
+            start = np.array(batch_s.start, dtype='int64')
+            stop = np.array(batch_s.stop, dtype='int64')
             my_results = \
-                self._functions.slc_in(*my_inputs, batch_s, output_subset=output_subset)
+                self._functions.slc_in(*my_inputs, start, stop, output_subset=output_subset)
         elif isinstance(batch_s, np.ndarray):
             my_results = \
                 self._functions.lst_in(*my_inputs, batch_s, output_subset=output_subset)
@@ -230,8 +232,8 @@ class BaseFunction(object):
                 elif isinstance(batch_s, np.ndarray):
                     sliced_inputs.append(batch_s[slc])
                 elif isinstance(batch_s, slice):
-                    start = np.array(batch_s.start + slc.start)
-                    stop = np.array(batch_s.start + slc.stop)
+                    start = np.array(batch_s.start + slc.start, dtype='int64')
+                    stop = np.array(batch_s.start + slc.stop, dtype='int64')
                     sliced_inputs += [start, stop]
             yield tuple(sliced_inputs)
 
