@@ -40,6 +40,7 @@ def build_syncs(n_parallel, max_n_var=100, max_dim=16):
         datas=mp.RawArray(ctypes.c_uint, max_n_var),
         shapes=np_mp_arr(ctypes.c_uint, max_n_var * max_dim).reshape(max_n_var, max_dim),
         nd_up=mp.RawValue(ctypes.c_uint, 0),
+        rank=mp.RawValue(ctypes.c_uint, 0),
     )
     data = struct(
         ID=mp.RawValue('i', 0),

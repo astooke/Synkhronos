@@ -26,6 +26,10 @@ GATHER = 2
 ALL_GATHER = 3
 REDUCE = 4
 ALL_REDUCE = 5
+SET_VALUE = 6
+GET_VALUE = 7
+GET_LENGTHS = 8
+GET_SHAPES = 9
 
 state = struct(forked=False, distributed=False, closed=False)
 sync = None  # Will be assigned back by master.

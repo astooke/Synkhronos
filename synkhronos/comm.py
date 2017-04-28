@@ -46,26 +46,31 @@ class CpuCommMaster(object):
 
     def __init__(self, n_parallel, master_rank, min_port=1024, max_port=65535):
         context = zmq.Context()
-        pair_sockets = list()
-        pair_ports = list()
-        for i in range(n_parallel - 1):
-            socket = context.socket(zmq.PAIR)
-            port = socket.bind_to_random_port(
-                "tcp://*", min_port=min_port, max_port=max_port)
-            pair_sockets.append(socket)
-            pair_ports.append(port)
-        ports_send = list(pair_ports)
-        ports_send.append(pair_ports[master_rank])  # (last worker gets this one)
+        rank_pair_sockets = list()
+        rank_pair_ports = list()
+        for i in range(n_parallel):
+            if i == master_rank:
+                rank_pair_sockets.append(None)
+                rank_pair_ports.append(None)
+            else:
+                socket = context.socket(zmq.PAIR)
+                port = socket.bind_to_random_port(
+                    "tcp://*", min_port=min_port, max_port=max_port)
+                rank_pair_sockets.append(socket)
+                rank_pair_ports.append(port)
+        pair_sockets = list(rank_pair_sockets)
+        pair_sockets.pop(master_rank)
         pub_socket = context.socket(zmq.PUB)
         pub_port = socket.bind_to_random_port(
             "tcp://*", min_port=min_port, max_port=max_port)
-        ports_send.append(pub_port)
-        sync.dict["ports"] = ports_send
+        sync.dict["pair_ports"] = rank_pair_ports
+        sync.dict["pub_port"] = pub_port
         for _ in range(n_parallel - 1):
             sync.semaphore.release()  # (let the workers connect)
         self.context = context
+        self.rank_pair_sockets = rank_pair_sockets
         self.pair_sockets = pair_sockets
-        self.pair_ports = pair_ports
+        self.rank_pair_ports = rank_pair_ports
         self.pub_socket = pub_socket
         self.pub_port = pub_port
         self.n = n_parallel
@@ -113,20 +118,18 @@ class CpuCommMaster(object):
         return recv_arr
 
     def broadcast(self, arr):
-        send_nd_array(self.pub_socket, arr)
+        send_nd_array(self.pub_socket, np.asarray(arr))
 
     def gather(self, arr, nd_up=1, dest=None):
         if nd_up > 1:
-            raise NotImplementedError
-        recv_arrs = [np.asarray(arr)]
-        for socket in self.pair_sockets:
-            recv_arrs.append(recv_nd_array(socket))
-        combine = np.concatenate if nd_up == 0 else np.vstack
-        if dest is not None:
-            dest[:] = combine(recv_arrs)
-        else:
-            dest = combine(recv_arrs)
-        return dest
+            raise ValueError("Only nd_up 0 or 1 supported.")
+        recv_arrs = list()
+        for socket in self.rank_pair_sockets:
+            if socket is None:
+                recv_arrs.append(np.asarray(arr))
+            else:
+                recv_arrs.append(recv_nd_array(socket))
+        return combine_nd_arrays(recv_arrs, nd_up, dest)
 
     def all_gather(self, arr, nd_up=1, dest=None):
         recv_arr = self.gather(arr, nd_up, dest)
@@ -143,6 +146,49 @@ class CpuCommMaster(object):
         send_nd_array(self.pair_sockets[-1], arr[last_n:])
         return arr[:n]
 
+    def send(self, rank, arr):
+        send_nd_array(self.rank_pair_sockets[rank], np.asarray(arr))
+
+    def recv(self, rank):
+        return recv_nd_array(self.rank_pair_sockets[rank])
+
+    def recv_lengths(self, master_len):
+        lengths = list()
+        for sock in self.rank_pair_sockets:
+            if sock is None:
+                lengths.append(master_len)
+            else:
+                lengths.append(int(sock.recv_string()))
+        return lengths
+
+    def recv_shapes(self, master_shape):
+        shapes = list()
+        for sock in self.rank_pair_sockets:
+            if sock is None:
+                shapes.append(master_shape)
+            else:
+                shapes.append(str_to_shape(sock.recv_string()))
+        return shapes
+
+
+def combine_nd_arrays(arrays, nd_up, dest=None):
+    shapes = [arr.shape for arr in arrays]
+    shapes_match = all([shp == shapes[0] for shp in shapes])
+    concat_match = all([shp[1:] == shapes[0][1:] for shp in shapes])
+    if nd_up == 0 and concat_match:
+        if dest is not None:
+            dest[:] = np.concatenate(arrays)
+        else:
+            dest = np.concatenate(arrays)
+    elif nd_up == 1 and shapes_match:
+        if dest is not None:
+            dest[:] = np.concatenate([arr[np.newaxis] for arr in arrays])
+        else:
+            dest = np.concatenate([arr[np.newaxis] for arr in arrays])
+    else:
+        dest = arrays
+    return dest
+
 
 class CpuCommWorker(object):
 
@@ -150,10 +196,10 @@ class CpuCommWorker(object):
         context = zmq.Context()
         pair_socket = context.socket(zmq.PAIR)
         sync.semaphore.acquire()
-        pair_port = sync.dict["ports"][rank]
+        pair_port = sync.dict["pair_ports"][rank]
         pair_socket.connect("tcp://localhost:%s" % pair_port)
         sub_socket = context.socket(zmq.SUB)
-        sub_port = sync.dict["ports"][-1]
+        sub_port = sync.dict["pub_port"]
         sub_socket.connect("tcp://localhost:%s" % sub_port)
         self.context = context
         self.pair_socket = pair_socket
@@ -174,17 +220,30 @@ class CpuCommWorker(object):
         send_nd_array(self.pair_socket, np.asarray(arr))
         return recv_nd_array(self.sub_socket)
 
+    def send_length(self, arr):
+        self.pair_socket.send_string(str(arr.shape[0]))
+
+    def send_shape(self, arr):
+        self.pair_socket.send_string(shape_to_str(arr.shape))
+
+
+def shape_to_str(shape):
+    return str(shape).lstrip('(').rstrip(')').rstrip(',')
+
+
+def str_to_shape(string):
+    return () if not string else tuple([int(s) for s in string.split(',')])
+
 
 def send_nd_array(socket, arr):
     socket.send_string(arr.dtype.name)
-    socket.send_string(str(arr.shape).lstrip('(').rstrip(')').rstrip(','))
+    socket.send_string(shape_to_str(arr.shape))
     socket.send(arr, copy=False)
 
 
 def recv_nd_array(socket):
     dtype = socket.recv_string()
-    shape = socket.recv_string()
-    shape = () if not shape else tuple([int(s) for s in shape.split(',')])
+    shape = str_to_shape(socket.recv_string())
     arr = socket.recv(copy=False)
     return np.frombuffer(arr, dtype=dtype).reshape(shape)
 

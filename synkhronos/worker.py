@@ -42,17 +42,18 @@ def manage_data(data_op, sync_data):
 
 def profiling_worker(*args, **kwargs):
     import cProfile
+    rank = args[0]
     cProfile.runctx('worker_main(*args, **kwargs)', locals(), globals(),
-        "worker_nored_trust_inputs.prof")
+        "synk_worker_{}.prof".format(rank))
 
 
 def worker_main(rank, n_parallel, master_rank, use_gpu, syncs):
+    atexit.register(exct.worker_error_close)
     give_syncs(syncs)
     if use_gpu:
         exct.init_gpus(rank)
     scatterer.assign_rank(n_parallel, rank)
     connect_as_worker(n_parallel, rank, master_rank, use_gpu)
-    atexit.register(exct.worker_error_close)
 
     while True:
         exct.sync.barrier_in.wait()
@@ -68,9 +69,9 @@ def worker_main(rank, n_parallel, master_rank, use_gpu, syncs):
         elif exct_ID == exct.GPU_COLL:
             worker_gpu_coll(sub_ID)
         elif exct_ID == exct.CPU_COLL:
-            worker_cpu_coll(sub_ID)
+            worker_cpu_coll(sub_ID, rank)
         elif exct_ID == exct.SYNK_COLL:
-            worker_synk_coll(sub_ID)
+            worker_synk_coll(sub_ID, rank)
         elif exct_ID == exct.DATA:
             manage_data(sub_ID, syncs.data)
         else:
