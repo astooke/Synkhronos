@@ -31,7 +31,7 @@ class BaseFunction(object):
         self._n_scat = n_scatter
         self._n_bcast = n_bcast
         self._slc_shareds = slc_shareds
-        self._n_slc_sh = len(slc_shareds)
+        self._n_slc_sh = 0 if slc_shareds is None else len(slc_shareds)
         self._update_vars = update_vars
         self._collect_modes = collect_modes
         self._n_input = n_scatter + n_bcast
@@ -79,7 +79,7 @@ class BaseFunction(object):
         self._avg_fs = avg_fs
 
     def get_shared(self):
-        return self._f.get_shared()
+        return self._functions.f.get_shared()
 
     def _check_batch_s(self, batch_s, scat_inputs):
         if not self._slc_shareds:

@@ -37,7 +37,6 @@ def function(inputs, outputs=None, bcast_inputs=None, updates=None,
     reg_outputs, gpu_outputs, to_cpu, output_modes = process_outputs(outputs)
     updates, update_vars, sliced_update_outs, update_modes = process_updates(updates)
 
-
     theano_function = theano.function(
             inputs=inputs + bcast_inputs,
             outputs=reg_outputs,
@@ -153,7 +152,7 @@ COLLECT_MODES = ["avg", "sum", "prod", "min", "max", "gather",
 
 def process_outputs(outputs):
     if outputs is None:
-        return None, None, [], []
+        return None, [], [], []
     output_vars = list()
     output_modes = list()
     from theano.gpuarray.type import GpuArrayVariable
