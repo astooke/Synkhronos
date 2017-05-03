@@ -46,7 +46,7 @@ class BaseData(object):
             self._np_shmem[:int(np.prod(shape))].reshape(shape)
 
     def _free_shmem(self):
-        self._data = np.empty([0] * self.ndim, dtype=self.dtype)
+        self._data = np.empty([0] * self._ndim, dtype=self._dtype)
         self._np_shmem = None
         self._shmem = None
         self._alloc_size = 0
@@ -112,14 +112,14 @@ class DataHelpers(BaseData):
         sync.alloc_size.value = size
         sync.tag.value = self._tag
         sync.ID.value = self._ID
-        sync.shape[:self.ndim] = shape
+        sync.shape[:self._ndim] = shape
         exct.launch(exct.DATA, exct.ALLOC)
         self._shape_data(shape)
         exct.join()
 
     def _shape_and_signal(self, shape):
         sync.ID.value = self._ID
-        sync.shape[:self.ndim] = shape
+        sync.shape[:self._ndim] = shape
         exct.launch(exct.DATA, exct.RESHAPE)
         self._shape_data(shape)
         exct.join()
@@ -128,24 +128,24 @@ class DataHelpers(BaseData):
         """ takes in any data and returns numpy array """
         if force_cast:
             if not isinstance(input_data, np.ndarray):
-                input_data = np.asarray(input_data, dtype=self.dtype)
-            elif input_data.dtype != self.dtype:
-                input_data = input_data.astype(self.dtype)
+                input_data = np.asarray(input_data, dtype=self._dtype)
+            elif input_data.dtype != self._dtype:
+                input_data = input_data.astype(self._dtype)
         else:
             if not isinstance(input_data, np.ndarray):
                 input_data = np.asarray(input_data)
-            if input_data.dtype != self.dtype:
-                common_dtype = np.find_common_type([input_data.dtype, self.dtype], [])
-                if common_dtype == self.dtype:
-                    input_data = input_data.astype(self.dtype)
+            if input_data.dtype != self._dtype:
+                common_dtype = np.find_common_type([input_data.dtype, self._dtype], [])
+                if common_dtype == self._dtype:
+                    input_data = input_data.astype(self._dtype)
                 else:
                     raise TypeError("Non up-castable data type provided for "
                         "input..., received: {}, expected: {}.  Could use param "
                         "'force_cast=True' to force to expected dtype.".format(
-                            input_data.dtype, self.dtype))
-        if input_data.ndim != self.ndim:
+                            input_data.dtype, self._dtype))
+        if input_data.ndim != self._ndim:
             raise TypeError("Wrong data ndim provided for data, received: "
-                "{}, expected: {}".format(input_data.ndim, self.ndim))
+                "{}, expected: {}".format(input_data.ndim, self._ndim))
         return input_data
 
 
@@ -220,7 +220,7 @@ class Data(DataHelpers):
         self._update_array(shape, oversize)
 
     def set_shape(self, shape, oversize=1):
-        if len(shape) != self.ndim:
+        if len(shape) != self._ndim:
             raise ValueError("Cannot change number of dimensions.")
         self._update_array(shape, oversize)
 
