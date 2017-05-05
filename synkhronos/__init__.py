@@ -6,11 +6,11 @@ from .forking import fork, close
 from .gpu_utils import get_n_gpu
 from .util import make_slices
 
-
+# workaround for pickling some functions
 import sys
 min_recursion_limit = 50000
 if sys.getrecursionlimit() < min_recursion_limit:
-  sys.setrecursionlimit(min_recursion_limit)
+    sys.setrecursionlimit(min_recursion_limit)
 del sys
 
 # clean up dir
