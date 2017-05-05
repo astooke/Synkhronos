@@ -8,7 +8,9 @@ from .util import make_slices
 
 
 import sys
-sys.setrecursionlimit(50000)  # (workaround for pickling some functions)
+min_recursion = 50000
+if sys.getrecursionlimit() < min_recursion:
+  sys.setrecursionlimit(min_recursion)
 del sys
 
 # clean up dir
