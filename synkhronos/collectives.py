@@ -174,7 +174,9 @@ def scatter_cpu(shared_vars, values, batch=None):
     exct.launch(exct.CPU_COLL, exct.SCATTER)
     results = list()
     for val in values:
-        results.append(comm.cpu.scatter(val[batch]))
+        if batch is not None:
+            val = val[batch]
+        results.append(comm.cpu.scatter(val))
     for var, r in zip(shared_vars, results):
         var.set_value(r)
     exct.join()
@@ -245,10 +247,9 @@ def set_value_cpu(rank, shared_vars, values, batch=None):
     collectives_prep(shared_vars, rank=rank)
     exct.launch(exct.CPU_COLL, exct.SET_VALUE)
     for val in values:
-        if batch is None:
-            comm.cpu.send(rank, val)
-        else:
-            comm.cpu.send(rank, val[batch])
+        if batch is not None:
+            val = val[batch]
+        comm.cpu.send(rank, val[batch])
     exct.join()
 
 

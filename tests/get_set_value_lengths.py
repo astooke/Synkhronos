@@ -23,3 +23,6 @@ synk.distribute()
 
 d55 = np.array(list(range(5 * 5)), dtype='float32').reshape(5, 5)
 d64 = np.array(list(range(6 * 4)), dtype='float32').reshape(6, 4)
+
+
+# (run interactive in iPython for setup)

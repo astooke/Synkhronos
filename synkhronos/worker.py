@@ -71,7 +71,7 @@ def worker_main(rank, n_parallel, master_rank, use_gpu, syncs):
         elif exct_ID == exct.CPU_COLL:
             worker_cpu_coll(sub_ID, rank)
         elif exct_ID == exct.SYNK_COLL:
-            worker_synk_coll(sub_ID, rank)
+            worker_synk_coll(sub_ID)
         elif exct_ID == exct.DATA:
             manage_data(sub_ID, syncs.data)
         else:
