@@ -43,9 +43,9 @@ class Scatterer(object):
             return ()
         if n_scat_inputs > 0:
             my_idxs = slice(*sync.assign_idxs[self.rank:self.rank + 2])
-            minibatch_0 = min(sync.assign_idxs)  # minib is exactly right size
+            mb_0 = min(sync.assign_idxs)  # minibatch is exactly right size
             minibatch_idxs = \
-                slice(my_idxs.start + minibatch_0, my_idxs.stop + minibatch_0)
+                slice(my_idxs.start - mb_0, my_idxs.stop - mb_0)
             if sync.use_idxs_arr.value:
                 my_idxs = sync.idxs_arr[my_idxs]
         my_inputs = list()
@@ -263,7 +263,7 @@ def assign_idxs_s(batch_s, n_parallel):
             idxs = np.vstack([0, b.size] for b in batch_s)
             idxs = np.cumsum(idxs).reshape(idxs.shape)
         elif isinstance(batch_s[0], slice):
-            idxs = np.vstack([[b.start, b.end] for b in batch_s])
+            idxs = np.vstack([[b.start, b.stop] for b in batch_s])
     elif isinstance(batch_s, np.ndarray):
         idxs = np.tile([0, batch_s.size], [n_parallel, 1])
     elif isinstance(batch_s, slice):

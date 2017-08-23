@@ -210,7 +210,7 @@ class BaseFunction(object):
             if batch_s is None:
                 s_length = self._slc_shareds[0].container.data.shape[0]  # length checked previously
             elif isinstance(batch_s, slice):
-                s_length = batch_s.stop - s.start
+                s_length = batch_s.stop - batch_s.start
             elif isinstance(batch_s, np.ndarray):
                 s_length = batch_s.size
             if length is None:
@@ -353,7 +353,6 @@ class FunctionHelpers(BaseFunction):
         if self._n_input > 0:
             check_synk_inputs(synk_inputs, self._input_vars)
             scatterer.assign_inputs(synk_inputs, batch, self._n_scat)
-        # TODO: handle batching for sliceable shared variables
         if self._n_slc_sh > 0:
             scatterer.assign_batch_s(batch_s)
         elif batch_s is not None:
