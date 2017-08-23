@@ -142,7 +142,7 @@ def check_batch_types(batch):
             if batch.ndim > 1:
                 raise ValueError("Array for param 'batch' must be "
                     "1-dimensional, got: {}".format(batch.ndim))
-            if not np.issubdtype(batch, int):
+            if not np.issubdtype(batch.dtype, int):
                 raise ValueError("Array for param 'batch' must be integer "
                     "dtype, got: {}".format(batch.dtype.name))
         elif isinstance(batch, slice):

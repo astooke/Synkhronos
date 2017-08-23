@@ -28,6 +28,7 @@ def n_gpu_subprocess(mp_n_gpu):
 
 
 def alloc_gpu_arr(dtype, shape):
+    # NOTE: can probably do this through pygpu instead
     s = theano.shared(np.empty(*shape, dtype=dtype))
     assert isinstance(s.container.data, GpuArray)
     return s.container.data

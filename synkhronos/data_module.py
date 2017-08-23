@@ -26,7 +26,7 @@ class BaseData(object):
         self._dtype = dtype.name if hasattr(dtype, "name") else dtype
         self._itemsize = np.dtype(self._dtype).itemsize
         self._ndim = ndim
-        self._data = np.empty([0] * ndim, dtype=dtype)
+        self._data = np.empty([0] * ndim, dtype=dtype)  # NOTE: why?
         self._minibatch = minibatch
         self._tag = 0
         self._shmem = None
@@ -46,7 +46,7 @@ class BaseData(object):
             self._np_shmem[:int(np.prod(shape))].reshape(shape)
 
     def _free_shmem(self):
-        self._data = np.empty([0] * self._ndim, dtype=self._dtype)
+        self._data = np.empty([0] * self._ndim, dtype=self._dtype)  # NOTE: why?
         self._np_shmem = None
         self._shmem = None
         self._alloc_size = 0
@@ -212,6 +212,7 @@ class Data(DataHelpers):
         self._data[:] = input_data
 
     def set_length(self, length, oversize=1):
+        # NOTE: this will lose old data if need new allocation
         length = int(length)
         if length < 1:
             raise ValueError("Length must be a positive integer.")
@@ -220,6 +221,7 @@ class Data(DataHelpers):
         self._update_array(shape, oversize)
 
     def set_shape(self, shape, oversize=1):
+        # NOTE: this will lose old data if need new allocation
         if len(shape) != self._ndim:
             raise ValueError("Cannot change number of dimensions.")
         self._update_array(shape, oversize)

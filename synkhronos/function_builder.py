@@ -3,6 +3,7 @@ import theano
 import theano.tensor as T
 import pickle
 from collections import OrderedDict
+import time
 
 from .function_module import Function, WorkerFunction
 from .collectives import shareds_registry
@@ -38,11 +39,11 @@ def function(inputs, outputs=None, bcast_inputs=None, updates=None,
     updates, update_vars, sliced_update_outs, update_modes = process_updates(updates)
 
     theano_function = theano.function(
-            inputs=inputs + bcast_inputs,
-            outputs=reg_outputs,
-            updates=updates,
-            givens=givens,
-            **kwargs,
+        inputs=inputs + bcast_inputs,
+        outputs=reg_outputs,
+        updates=updates,
+        givens=givens,
+        **kwargs,
     )
 
     functions = struct(theano_function=theano_function)
@@ -130,12 +131,13 @@ def distribute():
         raise RuntimeError("Need to fork before distributing functions.")
 
     print("Synkhronos distributing functions...")
+    t_start = time.time()
     distribution = [sf._get_distro_info() for sf in synk_functions]
     with open(PKL_FILE, "wb") as f:
         pickle.dump(distribution, f, pickle.HIGHEST_PROTOCOL)
     exct.launch(exct.DISTRIBUTE)
     exct.join()
-    print("...distribution complete.")
+    print("...distribution complete ({:.0f} s).".format(time.time() - t_start))
     exct.state.distributed = True
 
 

@@ -10,7 +10,7 @@ from .data_module import Data
 ###############################################################################
 
 
-def data(var=None, value=None, dtype=None, ndim=None, shape=None,
+def data(value=None, var=None, dtype=None, ndim=None, shape=None,
          minibatch=False, force_cast=False, oversize=1, name=None):
     """ Returns a Data object, which is the only type that synkhronos
     functions can receive for Theano inputs.

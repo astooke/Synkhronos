@@ -120,7 +120,7 @@ class CpuCommMaster(object):
     def broadcast(self, arr):
         send_nd_array(self.pub_socket, np.asarray(arr))
 
-    def gather(self, arr, nd_up=1, dest=None):
+    def gather(self, arr, nd_up=0, dest=None):
         if nd_up > 1:
             raise ValueError("Only nd_up 0 or 1 supported.")
         recv_arrs = list()
@@ -131,7 +131,7 @@ class CpuCommMaster(object):
                 recv_arrs.append(recv_nd_array(socket))
         return combine_nd_arrays(recv_arrs, nd_up, dest)
 
-    def all_gather(self, arr, nd_up=1, dest=None):
+    def all_gather(self, arr, nd_up=0, dest=None):
         recv_arr = self.gather(arr, nd_up, dest)
         self.broadcast(recv_arr)
 
@@ -139,14 +139,15 @@ class CpuCommMaster(object):
         arr = np.asarray(arr)
         n_data = len(arr)
         n = -(- n_data // self.n)  # (ceiling div)
-        last_n = n
+        current_n = n
         for socket in self.pair_sockets[:-1]:
-            send_nd_array(socket, arr[last_n:last_n + n])
-            last_n += n
-        send_nd_array(self.pair_sockets[-1], arr[last_n:])
+            send_nd_array(socket, arr[current_n:current_n + n])
+            current_n += n
+        send_nd_array(self.pair_sockets[-1], arr[current_n:])
         return arr[:n]
 
     def send(self, rank, arr):
+        # NOTE: need an assertion: socket is not None? (if rank==master_rank)
         send_nd_array(self.rank_pair_sockets[rank], np.asarray(arr))
 
     def recv(self, rank):
@@ -283,7 +284,7 @@ class GpuCommMaster(GpuComm):
         else:
             avg = op == "avg"
             if avg: op = "sum"
-            # NOTE: all_reduce needed for NCCL bug in reduce
+            # NOTE: all_reduce needed for NCCL bug in reduce, DGX-1 version
             # self.comm.reduce(src=arr, op=op, dest=arr)
             self.comm.all_reduce(src=arr, op=op, dest=arr)
             if avg:
@@ -335,7 +336,7 @@ class GpuCommWorker(GpuComm):
             self.comm.all_gather(src=arr, nd_up=0)
         else:
             if op == "avg": op = "sum"
-            # NOTE: all_reduce needed for for NCCL bug in reduce.
+            # NOTE: all_reduce needed for NCCL bug in reduce, DGX-1 version
             # self.comm.reduce(src=arr, op=op, root=self.master_rank)
             self.comm.all_reduce(src=arr, op=op, dest=arr)
 

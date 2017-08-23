@@ -41,9 +41,9 @@ def close():
     """Close workers and join their processes.  Called automatically on exit.
     """
     if not exct.state.forked:
-        print("WARNING: Calling synkhronos.close before forking has no effect.")
+        print("WARNING: Calling synkhronos.close() before forking has no effect.")
     elif exct.state.closed:
-        print("WARNING: Called synkhronos.close after already closed.")
+        print("WARNING: Called synkhronos.close() after already closed.")
     else:
         exct.close()
 
@@ -57,7 +57,7 @@ def close():
 
 def check_n_parallel(n_parallel, master_rank, n_gpu):
     if n_gpu < 2:
-        raise NotImplementedError
+        raise NotImplementedError("Less than 2 GPUs found on computer.")
     if master_rank > n_gpu - 1 or master_rank < 0:
         raise ValueError("Invalid value for master rank.")
     n_parallel = n_gpu if n_parallel is None else n_parallel

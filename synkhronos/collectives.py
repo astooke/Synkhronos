@@ -145,6 +145,7 @@ def get_shapes(shared_vars):
     exct.join()
     return results
 
+
 ###############################################################################
 #                                                                             #
 #                           Collectives Executives                            #
@@ -249,7 +250,7 @@ def set_value_cpu(rank, shared_vars, values, batch=None):
     for val in values:
         if batch is not None:
             val = val[batch]
-        comm.cpu.send(rank, val[batch])
+        comm.cpu.send(rank, val)
     exct.join()
 
 
@@ -372,6 +373,7 @@ def exct_comm_type(gpu):
         return (exct.GPU_COLL, comm.gpu)
     else:
         return (exct.CPU_COLL, comm.cpu)
+
 
 ###############################################################################
 #                                                                             #

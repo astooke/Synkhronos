@@ -332,18 +332,6 @@ class FunctionHelpers(BaseFunction):
         self._return_list = return_list
         self._prev_output_subset = None
 
-    @property
-    def name(self):
-        return self._f.name
-
-    @property
-    def output_modes(self):
-        return self._output_modes
-
-    @property
-    def update_modes(self):
-        return self._update_modes
-
     def _order_inputs(self, args, kwargs):
         """ Combine args and kwargs into one list of input args. """
         n_args = len(args) + len(kwargs)
@@ -494,29 +482,38 @@ class Function(FunctionHelpers):
             outputs = outputs[0]
         return outputs
 
+    @property
+    def name(self):
+        return self._functions.theano_function.name
+
+    @property
+    def output_modes(self):
+        return self._output_modes
+
+    @property
+    def update_modes(self):
+        return self._update_modes
+
     def as_theano(self, *args, **kwargs):
         """Call the function in the master process only, as normal Theano.
 
-        This method will return outputs to the CPU if they were originally
-        requested there, unlike using ``function.theano_function()``, which is
-        built to hold all outputs on the GPU.
-
         Args:
-            *args (data): Normal data inputs to the Theano function
-            **kwargs (data): Normal data inputs to the Theano function
+            *args (data): Normal inputs to the Theano function
+            **kwargs (data): Normal inputs to the Theano function
         """
-        # FIXME:  possibly out of date.
-        results = self._f(*args, **kwargs)
-        if not isinstance(results, list):
-            results = [results]
-        o_subset = kwargs.pop("output_subset", None)
-        output_set = range(self._n_output) if o_subset is None else o_subset
-        for idx_r, idx_o in enumerate(output_set):
-            if self._outputs.to_cpu[idx_o]:
-                results[idx_r] = np.asarray(results[idx_r])
-        if len(results) == 1:
-            results = results[0]
-        return results
+        # results = self._f(*args, **kwargs)
+        # if not isinstance(results, list):
+        #     results = [results]
+        # o_subset = kwargs.pop("output_subset", None)
+        # output_set = range(self._n_output) if o_subset is None else o_subset
+        # for idx_r, idx_o in enumerate(output_set):
+        #     if self._outputs.to_cpu[idx_o]:
+        #         results[idx_r] = np.asarray(results[idx_r])
+        # if len(results) == 1:
+        #     results = results[0]
+        # return results
+
+        return self._functions.theano_function(*args, **kwargs)
 
     def build_inputs(self, *args, force_cast=False, oversize=1, minibatch=False,
                      **kwargs):
@@ -525,13 +522,15 @@ class Function(FunctionHelpers):
         as if calling the Theano function.
         # TODO: move force_cast and oversize to function signature?
         """
-        # FIXME: possibly out of date
         ordered_inputs = self._order_inputs(args, kwargs)
+        if not isinstance(minibatch, list):
+            minibatch = [minibatch] * len(ordered_inputs)
+        assert len(minibatch) == len(ordered_inputs)
         synk_datas = list()
-        for var, inpt in zip(self._input_vars, ordered_inputs):
+        for var, inpt, mb in zip(self._input_vars, ordered_inputs, minibatch):
             synk_data = data(var=var,
                              value=inpt,
-                             minibatch=minibatch,
+                             minibatch=mb,
                              force_cast=force_cast,
                              oversize=oversize,
                              name=var.name,
@@ -541,5 +540,3 @@ class Function(FunctionHelpers):
             return synk_datas[0]
         else:
             return tuple(synk_datas)
-
-

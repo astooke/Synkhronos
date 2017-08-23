@@ -1,3 +1,8 @@
+
+""" 23 Aug 2017 -- This file out of date; new speed demo upcoming. """
+
+
+
 import ipdb
 from timeit import default_timer as timer
 
@@ -6,6 +11,9 @@ import theano
 import theano.tensor as T
 
 import synkhronos as synk
+
+
+
 
 
 def make_data(input_shape, batch_size):
