@@ -23,9 +23,6 @@ import lasagne  # requires Theano flags: device=cpu, force_device=True
 
 import synkhronos as synk
 
-# import ipdb
-
-
 
 # ################## Download and prepare the MNIST dataset ##################
 # This is just some way of getting the MNIST dataset from an online location
@@ -246,7 +243,7 @@ def iterate_minibatch_indices(data_len, batchsize, shuffle=False):
 # more functions to better separate the code, but it wouldn't make it any
 # easier to read.
 
-def main(model='mlp', num_epochs=500):
+def main(model='mlp', batch_size=500, num_epochs=10):
     # Load the dataset
     print("Loading data...")
     X_train, y_train, X_val, y_val, X_test, y_test = load_dataset()
@@ -306,7 +303,7 @@ def main(model='mlp', num_epochs=500):
     # val_fn = theano.function([input_var, target_var], [test_loss, test_acc])
     val_fn = synk.function([input_var, target_var], [test_loss, test_acc])
 
-    # Send all functions and variables to workers (in the future, automatic)
+    # Send all functions and variables to workers
     synk.distribute()
 
     # Write data into input shared memory (also applies to val_fn--same vars).
@@ -322,21 +319,25 @@ def main(model='mlp', num_epochs=500):
         train_err = 0
         train_batches = 0
         start_time = time.time()
-        for batch in iterate_minibatch_indices(len(y_train), 500, shuffle=True):
+        for batch in iterate_minibatch_indices(len(y_train), batch_size, shuffle=True):
             train_err += train_fn(X_train_synk, y_train_synk, batch=batch)
             synk.all_reduce(params)
             train_batches += 1
         mid_time = time.time()
 
         # And a full pass over the validation data:
-        val_err = 0
-        val_acc = 0
-        val_batches = 0
-        for batch in iterate_minibatch_indices(len(y_val), 500, shuffle=False):
-            err, acc = val_fn(X_val_synk, y_val_synk, batch=batch, num_slices=1)
-            val_err += err
-            val_acc += acc
-            val_batches += 1
+        # val_err = 0
+        # val_acc = 0
+        # val_batches = 0
+        # for batch in iterate_minibatch_indices(len(y_val), batch_size, shuffle=False):
+        #     err, acc = val_fn(X_val_synk, y_val_synk, batch=batch)
+        #     val_err += err
+        #     val_acc += acc
+        #     val_batches += 1
+
+        # If no need to shuffle, just use num_slices to reduce memory footprint
+        # of computation.
+        val_err, val_acc = val_fn(X_val_synk, y_val_synk, num_slices=4)
         end_time = time.time()
 
         val_fn_time = end_time - mid_time
@@ -348,15 +349,15 @@ def main(model='mlp', num_epochs=500):
         print("Train function time: {:.3f}s".format(train_fn_time))
         print("Validation function time: {:.3f}s".format(val_fn_time))
         print("  training loss:\t\t{:.6f}".format(train_err / train_batches))
-        print("  validation loss:\t\t{:.6f}".format(val_err / val_batches))
-        print("  validation accuracy:\t\t{:.2f} %".format(
-            val_acc / val_batches * 100))
+        print("  validation loss:\t\t{:.6f}".format(float(val_err)))  # / val_batches))
+        print("  validation accuracy:\t\t{:.2f} %".format(float(val_acc) * 100))
+        #    val_acc / val_batches * 100))
 
     # After training, we compute and print the test error:
     test_err = 0
     test_acc = 0
     test_batches = 0
-    for batch in iterate_minibatch_indices(len(y_test), 500, shuffle=False):
+    for batch in iterate_minibatch_indices(len(y_test), batch_size, shuffle=False):
         err, acc = val_fn(X_test_synk, y_test_synk, batch=batch)
         test_err += err
         test_acc += acc
@@ -386,11 +387,15 @@ if __name__ == '__main__':
         print("       with DEPTH hidden layers of WIDTH units, DROP_IN")
         print("       input dropout and DROP_HID hidden dropout,")
         print("       'cnn' for a simple Convolutional Neural Network (CNN).")
-        print("EPOCHS: number of training epochs to perform (default: 500)")
+        print("BATCH_SIZE: number of data points to process for each")
+        print("            gradient step (default: 500)")
+        print("EPOCHS: number of training epochs to perform (default: 10)")
     else:
         kwargs = {}
         if len(sys.argv) > 1:
             kwargs['model'] = sys.argv[1]
         if len(sys.argv) > 2:
-            kwargs['num_epochs'] = int(sys.argv[2])
+            kwargs['batch_size'] = int(sys.argv[2])
+        if len(sys.argv) > 3:
+            kwargs['num_epochs'] = int(sys.argv[3])
         main(**kwargs)

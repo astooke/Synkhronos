@@ -57,12 +57,12 @@ class BaseFunction(object):
         return info
 
     def _define_collect(self, collect_modes):
-        bare_ops = [m.lstrip("c_") for m in collect_modes]
+        bare_ops = [m.lstrip("c_") if m is not None else m for m in collect_modes]
         self._collect = struct(
             modes=collect_modes,
             nccl=[b == m and b is not None for b, m in zip(bare_ops, collect_modes)],
             ops=bare_ops,
-            avgs=["avg" in m for m in collect_modes],
+            avgs=[False if m is None else "avg" in m for m in collect_modes],
         )
 
     def _set_reduce_fs(self, collect_modes, outputs):

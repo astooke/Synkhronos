@@ -19,9 +19,9 @@ import time
 import numpy as np
 import theano
 import theano.tensor as T
-import theano.gpuarray
+import lasagne  # requires Theano flags: device=cpu, force_device=True
 
-import lasagne
+import synkhronos as synk
 
 
 # ################## Download and prepare the MNIST dataset ##################
@@ -225,6 +225,18 @@ def iterate_minibatches(inputs, targets, batchsize, shuffle=False):
         yield inputs[excerpt], targets[excerpt]
 
 
+def iterate_minibatch_indices(data_len, batchsize, shuffle=False):
+    if shuffle:
+        indices = np.arange(data_len)
+        np.random.shuffle(indices)
+    for start_idx in range(0, data_len - batchsize + 1, batchsize):
+        if shuffle:
+            batch = indices[start_idx:start_idx + batchsize]
+        else:
+            batch = slice(start_idx, start_idx + batchsize)
+        yield batch  # (workers will all use the same indexes internally)
+
+
 # ############################## Main program ################################
 # Everything else will be handled in our main program now. We could pull out
 # more functions to better separate the code, but it wouldn't make it any
@@ -234,9 +246,13 @@ def main(model='mlp', batch_size=500, num_epochs=10):
     # Load the dataset
     print("Loading data...")
     X_train, y_train, X_val, y_val, X_test, y_test = load_dataset()
+    # (needed for some dtype hangup in function givens)
+    y_train = y_train.astype('int32')
+    y_val = y_val.astype('int32')
+    y_test = y_test.astype('int32')
 
-    # Use the GPU.
-    theano.gpuarray.use("cuda")
+    # Fork workers and initialize gpu before building any variables.
+    n_gpus = synk.fork()
 
     # Prepare Theano variables for inputs and targets
     input_var = T.tensor4('inputs')
@@ -269,7 +285,7 @@ def main(model='mlp', batch_size=500, num_epochs=10):
     params = lasagne.layers.get_all_params(network, trainable=True)
     updates = lasagne.updates.nesterov_momentum(
             loss, params, learning_rate=0.01, momentum=0.9)
-
+    # ipdb.set_trace()
     # Create a loss expression for validation/testing. The crucial difference
     # here is that we do a deterministic forward pass through the network,
     # disabling dropout layers.
@@ -281,12 +297,39 @@ def main(model='mlp', batch_size=500, num_epochs=10):
     test_acc = T.mean(T.eq(T.argmax(test_prediction, axis=1), target_var),
                       dtype=theano.config.floatX)
 
+    # Make GPU variables to hold the data.
+    s_input_train = theano.shared(X_train)
+    s_target_train = theano.shared(y_train)
+    s_input_val = theano.shared(X_val)
+    s_target_val = theano.shared(y_val)
+
     # Compile a function performing a training step on a mini-batch (by giving
     # the updates dictionary) and returning the corresponding training loss:
-    train_fn = theano.function([input_var, target_var], loss, updates=updates)
+    # train_fn = theano.function([input_var, target_var], loss, updates=updates)
+    train_fn = synk.function(inputs=[], outputs=loss, updates=updates,
+        givens=[(input_var, s_input_train), (target_var, s_target_train)],
+        sliceable_shareds=[s_input_train, s_target_train])
 
     # Compile a second function computing the validation loss and accuracy:
-    val_fn = theano.function([input_var, target_var], [test_loss, test_acc])
+    # val_fn = theano.function([input_var, target_var], [test_loss, test_acc])
+    val_fn = synk.function(inputs=[], outputs=[test_loss, test_acc],
+        givens=[(input_var, s_input_val), (target_var, s_target_val)],
+        sliceable_shareds=[s_input_val, s_target_val])
+
+    # Compile a third function for test which just uses data from CPU.
+    test_fn = synk.function([input_var, target_var], [test_loss, test_acc])
+
+    # Send all functions and variables to workers
+    synk.distribute()
+
+    # Scatter the data across GPUs.
+    synk.scatter([s_input_train, s_target_train], [X_train, y_train])
+    synk.scatter([s_input_val, s_target_val], [X_val, y_val])
+    train_worker_len = min(synk.get_lengths(s_target_train))
+    worker_b_size = batch_size // n_gpus
+
+    # Build shared-memory test data.
+    X_test_synk, y_test_synk = test_fn.build_inputs(X_test, y_test)
 
     # Finally, launch the training loop.
     print("Starting training...")
@@ -296,52 +339,61 @@ def main(model='mlp', batch_size=500, num_epochs=10):
         train_err = 0
         train_batches = 0
         start_time = time.time()
-        for batch in iterate_minibatches(X_train, y_train, batch_size, shuffle=True):
-            inputs, targets = batch
-            train_err += train_fn(inputs, targets)
+        for batch in iterate_minibatch_indices(train_worker_len, worker_b_size, shuffle=True):
+            train_err += train_fn(batch_s=batch)
+            synk.all_reduce(params)
             train_batches += 1
+        mid_time = time.time()
 
         # And a full pass over the validation data:
-        val_err = 0
-        val_acc = 0
-        val_batches = 0
-        for batch in iterate_minibatches(X_val, y_val, batch_size, shuffle=False):
-            inputs, targets = batch
-            err, acc = val_fn(inputs, targets)
-            val_err += err
-            val_acc += acc
-            val_batches += 1
+        # val_err = 0
+        # val_acc = 0
+        # val_batches = 0
+        # for batch in iterate_minibatch_indices(val_worker_len, worker_b_size, shuffle=False):
+        #     err, acc = val_fn(batch_s=batch)
+        #     val_err += err
+        #     val_acc += acc
+        #     val_batches += 1
+        val_err, val_acc = val_fn(num_slices=4)  # (if no need to shuffle!)
+
+        end_time = time.time()
+
+        val_fn_time = end_time - mid_time
+        train_fn_time = mid_time - start_time
 
         # Then we print the results for this epoch:
         print("Epoch {} of {} took {:.3f}s".format(
             epoch + 1, num_epochs, time.time() - start_time))
+        print("Train function time: {:.3f}s".format(train_fn_time))
+        print("Validation function time: {:.3f}s".format(val_fn_time))
         print("  training loss:\t\t{:.6f}".format(train_err / train_batches))
-        print("  validation loss:\t\t{:.6f}".format(val_err / val_batches))
-        print("  validation accuracy:\t\t{:.2f} %".format(
-            val_acc / val_batches * 100))
+        # ipdb.set_trace()
+        print("  validation loss:\t\t{:.6f}".format(float(val_err)))  # / val_batches))
+        print("  validation accuracy:\t\t{:.2f} %".format(float(val_acc * 100)))
+        #     val_acc / val_batches * 100))
 
     # After training, we compute and print the test error:
     test_err = 0
     test_acc = 0
     test_batches = 0
-    for batch in iterate_minibatches(X_test, y_test, batch_size, shuffle=False):
-        inputs, targets = batch
-        err, acc = val_fn(inputs, targets)
+    for batch in iterate_minibatch_indices(len(y_test), batch_size, shuffle=False):
+        err, acc = test_fn(X_test_synk, y_test_synk, batch=batch)
         test_err += err
         test_acc += acc
         test_batches += 1
+
     print("Final results:")
     print("  test loss:\t\t\t{:.6f}".format(test_err / test_batches))
     print("  test accuracy:\t\t{:.2f} %".format(
         test_acc / test_batches * 100))
 
     # Optionally, you could now dump the network weights to a file like this:
-    # np.savez('model.npz', *lasagne.layers.get_all_param_values(network))
-    #
+    np.savez('model.npz', *lasagne.layers.get_all_param_values(network))
+
     # And load them again later on like this:
-    # with np.load('model.npz') as f:
-    #     param_values = [f['arr_%d' % i] for i in range(len(f.files))]
-    # lasagne.layers.set_all_param_values(network, param_values)
+    with np.load('model.npz') as f:
+        param_values = [f['arr_%d' % i] for i in range(len(f.files))]
+    lasagne.layers.set_all_param_values(network, param_values)
 
 
 if __name__ == '__main__':
