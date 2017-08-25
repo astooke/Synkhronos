@@ -15,7 +15,7 @@ from .worker import worker_main, profiling_worker
 
 
 def fork(n_parallel=None, use_gpu=True, master_rank=0,
-         profile_workers=False, max_n_var=100, max_dim=16):
+         profile_workers=False, max_n_var=1000, max_dim=16):
     if exct.state.forked:
         raise RuntimeError("Only fork once.")
     target = profiling_worker if profile_workers else worker_main
