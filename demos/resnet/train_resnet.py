@@ -66,6 +66,15 @@ def sgd(lr, tparams, grads, x, y, cost):
 
     pup = [(p, p - lr * g) for p, g in zip(tparams, gshared)]
 
+    # For speed test vvv
+    total_n_params = np.sum([p.get_value(borrow=True).size for p in tparams])
+    gshared = theano.shared(np.empty(total_n_params, dtype=theano.config.floatX),
+        name='test_grad_vector')
+
+    # Build a dummy synk function so all workers have this shared variable.
+    f_gshared = synk.function(inputs=[], updates=[(gshared, 2 * gshared)])
+    # END: for speed test  ^^^
+
     # Function that updates the weights from the previously computed
     # gradient.
     # f_update = theano.function([lr], [], updates=pup,
@@ -152,7 +161,7 @@ def train_resnet(
             # train_loss += f_grad(x_train[mb_idxs], y_train[mb_idxs], lrate)
 
             train_loss += f_grad_shared(x_train, y_train, batch=mb_idxs)
-            # synk.all_reduce(gshared, op="sum")  # (sum instead of avg, to scale learning rate)
+            synk.all_reduce(gshared, op="sum")  # (sum instead of avg, to scale learning rate)
             f_update()
             i += 1
         train_loss /= i
@@ -161,16 +170,20 @@ def train_resnet(
         print("Training Loss: {:.3f}".format(train_loss))
 
         if ep % validFreq == 0:
-            valid_loss = valid_mc = 0.
-            i = 0
-            for mb_idxs in iter_mb_idxs(full_mb_size, len(x_valid), shuffle=False):
-                mb_loss, mb_mc = f_pred(x_valid, y_valid, batch=mb_idxs)
-                valid_loss += mb_loss
-                valid_mc += mb_mc
-                i += 1
-            valid_loss /= i
-            valid_acc = 1 - (valid_mc / i)
-            print("Validation Loss: {:3f},   Accuracy: {:3f}".format(valid_loss, valid_acc))
+            num_slices = len(x_valid) // n_gpu // batch_size
+            valid_loss, valid_mc = f_pred(x_valid, y_valid, num_slices=num_slices)
+            print("computed validation using {} slices".format(num_slices))
+
+            # valid_loss = valid_mc = 0.
+            # i = 0
+            # for mb_idxs in iter_mb_idxs(full_mb_size, len(x_valid), shuffle=False):
+            #     mb_loss, mb_mc = f_pred(x_valid, y_valid, batch=mb_idxs)
+            #     valid_loss += mb_loss
+            #     valid_mc += mb_mc
+            #     i += 1
+            # valid_loss /= i
+            # valid_mc /= i
+            print("Validation Loss: {:3f},   Accuracy: {:3f}".format(valid_loss, 1 - valid_mc))
 
         t_2 = time.time()
         print("(epoch total time: {:,.1f} s)".format(t_2 - t_last))
