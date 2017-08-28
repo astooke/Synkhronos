@@ -61,7 +61,7 @@ class CpuCommMaster(object):
         pair_sockets = list(rank_pair_sockets)
         pair_sockets.pop(master_rank)
         pub_socket = context.socket(zmq.PUB)
-        pub_port = socket.bind_to_random_port(
+        pub_port = pub_socket.bind_to_random_port(
             "tcp://*", min_port=min_port, max_port=max_port)
         sync.dict["pair_ports"] = rank_pair_ports
         sync.dict["pub_port"] = pub_port
