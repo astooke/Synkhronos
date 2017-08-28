@@ -323,6 +323,7 @@ def main(model='mlp', batch_size=500, num_epochs=10):
     synk.distribute()
 
     # Scatter the data across GPUs.
+    print("Scattering data to GPUs.")
     synk.scatter([s_input_train, s_target_train], [X_train, y_train])
     synk.scatter([s_input_val, s_target_val], [X_val, y_val])
     train_worker_len = min(synk.get_lengths(s_target_train))
