@@ -43,10 +43,11 @@ def build_funcs(resnet, params, update_rule, **update_kwargs):
 
 
 def train_resnet(
-        batch_size=32,  # batch size on each GPU
+        batch_size=64,  # batch size on each GPU
         validFreq=1,
+        do_valid=False,
         learning_rate=1e-3,
-        update_rule=updates.nesterov_momentum,
+        update_rule=updates.sgd,  # updates.nesterov_momentum,
         n_epoch=3,
         **update_kwargs):
 
@@ -80,7 +81,7 @@ def train_resnet(
         print("\nEpoch: ", ep)
         print("Training Loss: {:.3f}".format(train_loss))
 
-        if ep % validFreq == 0:
+        if do_valid and ep % validFreq == 0:
             valid_loss = valid_mc = 0.
             i = 0
             for mb_idxs in iter_mb_idxs(batch_size, len(x_valid), shuffle=False):

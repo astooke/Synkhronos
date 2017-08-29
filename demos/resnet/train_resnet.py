@@ -10,6 +10,7 @@ from synkhronos.extensions import updates
 
 from demos.resnet.common import build_resnet, iter_mb_idxs, load_data
 
+
 def build_funcs(resnet, params, update_rule, **update_kwargs):
 
     print("Building training functions")
@@ -47,10 +48,11 @@ def build_funcs(resnet, params, update_rule, **update_kwargs):
 
 
 def train_resnet(
-        batch_size=32,  # batch size on each GPU
+        batch_size=64,  # batch size on each GPU
         validFreq=1,
+        do_valid=False,
         learning_rate=1e-3,
-        update_rule=updates.nesterov_momentum,
+        update_rule=updates.sgd,  # updates.nesterov_momentum,
         n_epoch=3,
         n_gpu=None,  # later get this from synk.fork
         **update_kwargs):
@@ -58,7 +60,7 @@ def train_resnet(
     n_gpu = synk.fork(n_gpu)  # (n_gpu==None will use all)
 
     t_0 = time.time()
-    print("Loading data (pretend)")
+    print("Loading data (synthetic)")
     train, valid, test = load_data()
 
     x_train, y_train = [synk.data(d) for d in train]
@@ -95,9 +97,11 @@ def train_resnet(
         print("\nEpoch: ", ep)
         print("Training Loss: {:.3f}".format(train_loss))
 
-        if ep % validFreq == 0:
-            valid_loss, valid_mc = f_predict(x_valid, y_valid, num_slices=num_valid_slices)
-            print("Validation Loss: {:3f},   Accuracy: {:3f}".format(float(valid_loss), float(1 - valid_mc)))
+        if do_valid and ep % validFreq == 0:
+            valid_loss, valid_mc = f_predict(x_valid, y_valid,
+                                             num_slices=num_valid_slices)
+            print("Validation Loss: {:3f},   Accuracy: {:3f}".format(
+                float(valid_loss), float(1 - valid_mc)))
 
         t_2 = time.time()
         print("(epoch total time: {:,.1f} s)".format(t_2 - t_last))
