@@ -6,34 +6,7 @@ import lasagne
 import lasagne.layers as L
 import time
 
-from demos.resnet.build_resnet import build_resnet
-
-N_DATA = 32 * 32
-
-
-def load_data():
-    """
-    create synthetic data
-    """
-    train_targets = np.random.randint(1000, size=(N_DATA * 4, 1))
-    train_data = np.random.random((train_targets.shape[0], 3, 224, 224))
-    valid_targets = np.random.randint(1000, size=(N_DATA, 1))
-    valid_data = np.random.random((valid_targets.shape[0], 3, 224, 224))
-    test_targets = np.random.randint(1000, size=(N_DATA, 1))
-    test_data = np.random.random((test_targets.shape[0], 3, 224, 224))
-
-    rval = ([numpy_floatX(train_data), numpy_int32(train_targets)],
-            [numpy_floatX(valid_data), numpy_int32(valid_targets)],
-            [numpy_floatX(test_data), numpy_int32(test_targets)])
-    return rval
-
-
-def numpy_floatX(data):
-    return np.asarray(data, dtype=theano.config.floatX)
-
-
-def numpy_int32(data):
-    return data.astype("int32")
+from demos.resnet.common import build_resnet, load_data, unflatten_params
 
 
 def simple_sgd(lr, tparams, grads, x, y, cost):
@@ -41,6 +14,34 @@ def simple_sgd(lr, tparams, grads, x, y, cost):
     updates = [(p, p - lr * g) for p, g in zip(tparams, grads)]
     f_grad = theano.function([x, y, lr], cost, updates=updates)
     return f_grad
+
+
+def sgd_vec(lr, tparams, grads, x, y, cost):
+    """ like sgd but combines all the params into one vector (anticipate nccl)
+    """
+    flat_grad = T.concatenate([T.flatten(g) for g in grads])
+    param_shapes = [p.get_value(borrow=True).shape for p in tparams]
+    param_sizes = [p.get_value(borrow=True).size for p in tparams]
+    flat_grad_size = np.sum(param_sizes)
+    gshared_flat = theano.shared(np.empty(flat_grad_size,
+                                 dtype=theano.config.floatX), name='gshared_flat')
+    grad_flat_update = [(gshared_flat, flat_grad)]
+
+    f_grad_shared = theano.function([x, y], cost, updates=grad_flat_update,
+                                    name='sgd_f_grad_shared_flat')
+
+    unflatten_updates = list()
+    last_sz = 0
+    for p, sz, sh in zip(tparams, param_sizes, param_shapes):
+        inc = T.reshape(gshared_flat[last_sz:last_sz + sz], sh)
+        upd = (p, p - lr * inc)
+        unflatten_updates.append(upd)
+        last_sz += sz
+
+    f_update = theano.function([lr], [], updates=unflatten_updates,
+                                name='sgd_f_update_unflatten')
+
+    return f_grad_shared, f_update, gshared_flat
 
 
 def sgd(lr, tparams, grads, x, y, cost):
@@ -86,7 +87,7 @@ def train_resnet(
     batch_size=32,  # batch size on each GPU
     validFreq=1,
     lrate=1e-4,
-    optimizer=sgd,
+    optimizer=sgd_vec,
     n_epoch=2,
     n_gpu=1,  # later get this from synk.fork
 ):
@@ -130,10 +131,7 @@ def train_resnet(
         i = 0
         for mb_idxs in iter_mb_idxs(full_mb_size, len(x_train), shuffle=True):
             # train_loss += f_grad(x_train[mb_idxs], y_train[mb_idxs], lrate)
-
             train_loss += f_grad_shared(x_train[mb_idxs], y_train[mb_idxs])
-            # # for g in gshared:
-            # #     gpu_comm.all_reduce(g.container.data, op="sum", dest=g.container.data)
             f_update(lrate)
             i += 1
         train_loss /= i

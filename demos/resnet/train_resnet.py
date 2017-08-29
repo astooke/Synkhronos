@@ -17,25 +17,18 @@ def load_data():
     """
     create synthetic data
     """
-    train_targets = np.random.randint(1000, size=(N_DATA * 4, 1))
-    train_data = np.random.random((train_targets.shape[0], 3, 224, 224))
-    valid_targets = np.random.randint(1000, size=(N_DATA, 1))
-    valid_data = np.random.random((valid_targets.shape[0], 3, 224, 224))
-    test_targets = np.random.randint(1000, size=(N_DATA, 1))
-    test_data = np.random.random((test_targets.shape[0], 3, 224, 224))
+    FX = theano.config.floatX
+    train_targets = np.random.randint(1000, size=(N_DATA * 4, 1)).astype("int32")
+    train_data = np.random.random((train_targets.shape[0], 3, 224, 224)).astype(FX)
+    valid_targets = np.random.randint(1000, size=(N_DATA, 1)).astype("int32")
+    valid_data = np.random.random((valid_targets.shape[0], 3, 224, 224)).astype(FX)
+    test_targets = np.random.randint(1000, size=(N_DATA, 1)).astype("int32")
+    test_data = np.random.random((test_targets.shape[0], 3, 224, 224)).astype(FX)
 
-    rval = ([numpy_floatX(train_data), numpy_int32(train_targets)],
-            [numpy_floatX(valid_data), numpy_int32(valid_targets)],
-            [numpy_floatX(test_data), numpy_int32(test_targets)])
+    rval = ([train_data, train_targets],
+            [valid_data, valid_targets],
+            [test_data, test_targets])
     return rval
-
-
-def numpy_floatX(data):
-    return np.asarray(data, dtype=theano.config.floatX)
-
-
-def numpy_int32(data):
-    return data.astype("int32")
 
 
 def simple_sgd(lr, tparams, grads, x, y, cost):
@@ -43,6 +36,13 @@ def simple_sgd(lr, tparams, grads, x, y, cost):
     updates = [(p, p - lr * g) for p, g in zip(tparams, grads)]
     f_grad = theano.function([x, y, lr], cost, updates=updates)
     return f_grad
+
+
+def sgd_vec_comm(lr, tparams, grads, x, y, cost):
+    """ same as sgd but it packages all the params into one vector, so only
+    one call to nccl.all_reduce() is needed to communicate all params
+    """
+    flat_grad = T.concatenate([T.reshape(g, -1) for g in grads])
 
 
 def sgd(lr, tparams, grads, x, y, cost):
@@ -170,19 +170,19 @@ def train_resnet(
         print("Training Loss: {:.3f}".format(train_loss))
 
         if ep % validFreq == 0:
-            num_slices = len(x_valid) // n_gpu // batch_size
-            valid_loss, valid_mc = f_pred(x_valid, y_valid, num_slices=num_slices)
-            print("computed validation using {} slices".format(num_slices))
+            # num_slices = len(x_valid) // n_gpu // batch_size
+            # valid_loss, valid_mc = f_pred(x_valid, y_valid, num_slices=num_slices)
+            # print("computed validation using {} slices".format(num_slices))
 
-            # valid_loss = valid_mc = 0.
-            # i = 0
-            # for mb_idxs in iter_mb_idxs(full_mb_size, len(x_valid), shuffle=False):
-            #     mb_loss, mb_mc = f_pred(x_valid, y_valid, batch=mb_idxs)
-            #     valid_loss += mb_loss
-            #     valid_mc += mb_mc
-            #     i += 1
-            # valid_loss /= i
-            # valid_mc /= i
+            valid_loss = valid_mc = 0.
+            i = 0
+            for mb_idxs in iter_mb_idxs(full_mb_size, len(x_valid), shuffle=False):
+                mb_loss, mb_mc = f_pred(x_valid, y_valid, batch=mb_idxs)
+                valid_loss += mb_loss
+                valid_mc += mb_mc
+                i += 1
+            valid_loss /= i
+            valid_mc /= i
             print("Validation Loss: {:3f},   Accuracy: {:3f}".format(valid_loss, 1 - valid_mc))
 
         t_2 = time.time()
