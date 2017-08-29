@@ -14,7 +14,7 @@ import numpy as np
 def flatten_vars(variables):
     """
     input: list or tuple of Theano tensor or shared variables
-    output: Theano tensor variable, concatenation of all variables flattened
+    output: Theano vector variable, concatenation of all variables flattened
     """
     return T.concatenate([T.flatten(v) for v in variables])
 
@@ -29,7 +29,7 @@ def vars_flat_size(variables):
 
 def unflatten_vars(flat_var, variables):
     """
-    inputs: 1) flat (1-dim) Theano shared variable from which to draw slices
+    inputs: 1) flat (1-dim) Theano shared variable to be sliced
             2) list of Theano shared variables from which to draw shapes
     outputs: list of variables, shaped as inputs, referencing flat_var slices
     """

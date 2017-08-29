@@ -1,10 +1,8 @@
 
 import numpy as np
 import theano
-impot theano.tensor as T
 
 import lasagne
-# from lasagne.utils import floatX
 from lasagne.layers import InputLayer
 from lasagne.layers import Conv2DLayer as ConvLayer
 from lasagne.layers import BatchNormLayer
@@ -17,14 +15,46 @@ from lasagne.nonlinearities import rectify, softmax
 N_DATA = 32 * 32
 
 
-def unflatten_params(params, flat_params):
-    unflattened = list()
-    last = 0
-    for p in params:
-        pv = p.get_value(borrow=True)
-        unflattened.append(T.reshape(flat_params[last:last + pv.size], pv.shape))
-        last += pv.size
-    return unflattened
+def load_data():
+    """
+    create synthetic data
+    """
+    FX = theano.config.floatX
+    train_targets = np.random.randint(1000, size=(N_DATA * 4, 1)).astype("int32")
+    train_data = np.random.random((train_targets.shape[0], 3, 224, 224)).astype(FX)
+    valid_targets = np.random.randint(1000, size=(N_DATA, 1)).astype("int32")
+    valid_data = np.random.random((valid_targets.shape[0], 3, 224, 224)).astype(FX)
+    test_targets = np.random.randint(1000, size=(N_DATA, 1)).astype("int32")
+    test_data = np.random.random((test_targets.shape[0], 3, 224, 224)).astype(FX)
+
+    rval = ([train_data, train_targets],
+            [valid_data, valid_targets],
+            [test_data, test_targets])
+    return rval
+
+
+def iter_mb_idxs(mb_size, data_length, shuffle=False):
+    if shuffle:
+        indices = np.arange(data_length)
+        np.random.shuffle(indices)
+    for low in range(0, data_length - mb_size + 1, mb_size):
+        if shuffle:
+            mb_idxs = indices[low:low + mb_size]
+        else:
+            mb_idxs = slice(low, low + mb_size)
+        yield mb_idxs
+
+
+##########################################################################
+#
+# Functions for building the ResNet
+#
+# (taken from MILA/Platoon pull request #95 "Resnet 50")
+#
+##########################################################################
+
+
+simple_block_name_pattern = ['res%s_branch%i%s', 'bn%s_branch%i%s', 'res%s_branch%i%s_relu']
 
 
 def build_simple_block(incoming_layer, names,
@@ -78,9 +108,6 @@ def build_simple_block(incoming_layer, names,
 
     return dict(net), net[-1][0]
 
-
-
-simple_block_name_pattern = ['res%s_branch%i%s', 'bn%s_branch%i%s', 'res%s_branch%i%s_relu']
 
 def build_residual_block(incoming_layer, ratio_n_filter=1.0, ratio_size=1.0, has_left_branch=False,
                          upscale_factor=4, ix=''):
@@ -203,46 +230,3 @@ def build_resnet():
     net['prob'] = NonlinearityLayer(net['fc1000'], nonlinearity=softmax)
 
     return net
-
-
-def load_data():
-    """
-    create synthetic data
-    """
-    FX = theano.config.floatX
-    train_targets = np.random.randint(1000, size=(N_DATA * 4, 1)).astype("int32")
-    train_data = np.random.random((train_targets.shape[0], 3, 224, 224)).astype(FX)
-    valid_targets = np.random.randint(1000, size=(N_DATA, 1)).astype("int32")
-    valid_data = np.random.random((valid_targets.shape[0], 3, 224, 224)).astype(FX)
-    test_targets = np.random.randint(1000, size=(N_DATA, 1)).astype("int32")
-    test_data = np.random.random((test_targets.shape[0], 3, 224, 224)).astype(FX)
-
-    rval = ([train_data, train_targets],
-            [valid_data, valid_targets],
-            [test_data, test_targets])
-    return rval
-
-
-def build_model(optimizer, build_valid, learning_rate=1e-4):
-    print("Building model")
-    resnet = build_resnet()
-    params = L.get_all_params(resnet.values(), trainable=True)
-
-    x = T.ftensor4('x')
-    y = T.imatrix('y')
-
-    prob = L.get_output(resnet['prob'], x, deterministic=False)
-    loss = T.nnet.categorical_crossentropy(prob, y.flatten()).mean()
-
-    print("Building update rules")
-    grads = T.grad(loss, wrt=params)
-    lr = theano.shared(np.array(learning_rate, dtype=FX), (name='lr'))
-    f_train = optimizer(lr, params, grads, x, y, loss)
-    # f_grad = simple_sgd(lr, params, grads, x, y, loss)
-
-    print("Building validation functions")
-    v_prob = L.get_output(resnet['prob'], x, deterministic=True)
-    v_loss = T.nnet.categorical_crossentropy(v_prob, y.flatten()).mean()
-    v_mc = T.mean(T.neq(T.argmax(v_prob, axis=1), y.flatten()))
-    f_pred = build_valid(inputs=[x, y], outputs=[v_loss, v_mc])
-

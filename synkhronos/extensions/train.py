@@ -21,8 +21,8 @@ def make_train_function(loss, params, x, y, update_rule, *args, **kwargs):
                                   updates=grad_updates)
     f_param_update = synk.function(inputs=[], updates=param_updates)
 
-    def train_minibatch(x_data, y_data):
-        train_loss = f_grad_shared(x_data, y_data)
+    def train_minibatch(x_data, y_data, batch=None):
+        train_loss = f_grad_shared(x_data, y_data, batch=batch)  # (synk_data)
         synk.all_reduce(grad_shared, op="avg")  # (assumes loss is an avg)
         f_param_update()
         return train_loss
