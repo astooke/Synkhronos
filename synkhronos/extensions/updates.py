@@ -121,13 +121,13 @@ def apply_nesterov_momentum(param_updates, momentum=0.9):
 
 
 def momentum(loss, params, lr, momentum=0.9):
-    grad_updates, param_updates, grads_shared = sgd(lr, params, loss)
+    grad_updates, param_updates, grads_shared = sgd(loss, params, lr)
     param_updates = apply_momentum(param_updates, momentum=momentum)
     return grad_updates, param_updates, grads_shared
 
 
 def nesterov_momentum(loss, params, lr, momentum=0.9):
-    grad_updates, param_updates, grads_shared = sgd(lr, params, loss)
+    grad_updates, param_updates, grads_shared = sgd(loss, params, lr)
     param_updates = apply_nesterov_momentum(param_updates, momentum=momentum)
     return grad_updates, param_updates, grads_shared
 
