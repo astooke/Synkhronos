@@ -10,7 +10,6 @@ from synkhronos.extensions import updates
 
 from demos.resnet.common import build_resnet, iter_mb_idxs, load_data
 
-
 def build_funcs(resnet, params, update_rule, **update_kwargs):
 
     print("Building training functions")
@@ -98,7 +97,7 @@ def train_resnet(
 
         if ep % validFreq == 0:
             valid_loss, valid_mc = f_predict(x_valid, y_valid, num_slices=num_valid_slices)
-            print("Validation Loss: {:3f},   Accuracy: {:3f}".format(valid_loss, 1 - valid_mc))
+            print("Validation Loss: {:3f},   Accuracy: {:3f}".format(float(valid_loss), float(1 - valid_mc)))
 
         t_2 = time.time()
         print("(epoch total time: {:,.1f} s)".format(t_2 - t_last))
