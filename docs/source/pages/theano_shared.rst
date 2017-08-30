@@ -13,10 +13,10 @@ The resulting output is the correct answer:
     :language: text
     :lines: 1-5
 
-Continuing with a reset and a call to the Synkhronos function, we investigate results using ``gather()``, which is the way to collect all shared values into the master:
+Continuing with a reset and a call to the Synkhronos function, we investigate results using ``gather()``, one way to collect all shared values into the master:
 
 .. literalinclude:: /examples/example_1.py
-    :lines: 20-28
+    :lines: 21-32
 
 .. literalinclude:: /examples/example_1.txt
     :language: text
@@ -25,22 +25,18 @@ Continuing with a reset and a call to the Synkhronos function, we investigate re
 Lastly, to propagate the result to all workers and observe this effect, call the following:
 
 .. literalinclude:: /examples/example_1.py
-    :lines: 29-
+    :lines: 34-
 
 .. literalinclude:: /examples/example_1.txt
     :language: text
     :lines: 20-
 
-Notice the use of ``broadcast()`` to reset the values in the workers according to the master's values.
+Notice the use of ``broadcast()`` to set the values in all GPUs.
 
 Notes on Collectives
---------------------
+~~~~~~~~~~~~~~~~~~~~
 
-All Theano shared variable collectives must be called directly, through Synkhronos--no rules for associating such actions with a function exist yet.  ``broadcast()``, ``reduce()``, ``all-reduce()``, ``gather()``, and ``all-gather()`` operate through NVIDIA's NCCL collectives via PyGPU.  ``scatter()`` is a CPU shared-memory operation that pushes values to GPUs using Theano shared's ``set_value()`` method.  Results of collective communications may be returned as a new GPU array (i.e. not associated with a Theano shared variable) in the master process in some cases, but no collective action can create a new array in any worker.  See the function reference page for more details specific to each operation.
+Collectives can be called on any Theano shared variable used in a Synkhronos function.  CPU- and GPU-based collectives are available through the same interface.  Results of a GPU collective communication may be returned as a new GPU array in the master, but no collective can create a new array (not associated with a Theano shared variable) in a worker.  
 
-In the future, CPU-based analogs of all collectives are planned to be provided.  Beside being necessary for CPU-only usage, these might actually be faster in some uses on some computer architectures.
+Synkhronos provides the averaging reduction operation.  The reduce operation ``avg`` is not present in NCCL; Synkhronos uses ``sum`` and then multiplies by the reciprocal number of GPUs.
 
-Averaging
----------
-
-The reduce operation `average` is not present in NCCL.  This is implemented in Synkhronos by a NCCL `sum` reduction and then calling an internally built Theano function to multiply the value (shared variable or function output, while it's still on GPU) by the reciprocal of the number of GPUs.

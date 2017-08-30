@@ -3,38 +3,34 @@ Introductory Example
 
 .. literalinclude:: /examples/example_0.py
 
-Which returns, on an example, dual-GPU machine:
+Which returns, on a dual-GPU machine:
 
 .. literalinclude:: /examples/example_0.txt
     :language: text
 
 The program flow is:
 
-1. Import Theano and Sykhronos in file headers as desired.
-2. Call ``synkhronos.fork()``.
-3. Build Theano variables and graphs.
-4. Build functions through Synkhronos instead of Theano.
-5. Call ``synkhronos.distribute()``.
-6. Run remainder of program with function calls.
+1. Call ``synkhronos.fork()``.
+2. Build Theano variables and graphs.
+3. Build functions through Synkhronos instead of Theano.
+4. Call ``synkhronos.distribute()``.
+5. Manage input data / run program with functions.
 
 In More Detail
 --------------
 
-Call ``fork()`` to fork a python subprocess for each additional GPU in the computer.  Theano must be initialized on CPU-only before this point.  During ``fork()``, a single GPU is initialized in the master process, and all Theano variables thereafter are built in reference to it.
+Import Theano in CPU-mode, and ``fork()`` will initialize the master GPU in the main process and additional GPUs in other processes.  All Theano variables thereafter are built in the master, as in single-GPU programs.  ``distribute()`` replicates all functions, and their variables, in the additional processes and their GPUs.
 
-All inputs to Synkhronos functions will be scattered by splitting evenly along the `0-th` dimension.  Inputs which need to be the same in all workers (i.e. `broadcast` instead of `scatter`) should be built as Theano shared variables.
+A function's ``inputs`` will be scattered by splitting evenly along the 0-th dimension.  In this example, data parallelism applies across the 0-th dimensions of the variable ``x``.  A function's ``bcast_inputs`` are broadcast and used wholly in all workers, as the variable ``y`` in the example.
 
-A Synkhronos function's ``as_theano()`` method is equivalent to calling a normal Theano function and executes only in the master process and device.  This may be advantageous for small inputs or simple functions, when using multiple GPUs might actually be slower.  Theano functions, including those using Theano shared variables present in Synkhronos functions, can be created at any time and will run only in the master process and its GPU.
+All explicit inputs to functions must be of type ``synkhronos.Data``, rather than numpy arrays.  The underlying memory of these objects is in OS shared memory, so all processes have access to it.  They present an interface similar to numpy arrays, demonstrated later.
 
-By default, outputs are reduced and averaged, so the assertions pass.  Outputs may be gathered instead, or reduced by other operations: `sum`, `product`, `max`, or `min`.  Currently, all output collections are executed using NVIDIA's NCCL via PyGPU.
+The Synkhronos function is computed simultaneously on all GPUs, including the master.  By default, outputs are reduced and averaged, so the comparison to the single-GPU Theano function result passes.  Other operations are possible: `sum`, `prod`, `max`, `min`, or ``None`` for no reduction.
 
 
 Distribute
 ----------
 
-After all functions are constructed, calling ``distribute()`` pickles all functions (and their shared variable data) in the master and unpickles them in all workers.  This may take a few moments.
+After all functions are constructed, calling ``distribute()`` pickles all functions (and their shared variable data) in the master and unpickles them in all workers.  This may take a few moments.  Pickling all functions together preserves correspondences among variables used in multiple functions in each worker.  
 
-
-Pickling all functions together preserves correspondences among variables used in multiple functions.  Workers register the unpickled functions in the same fashion as they were registered in the master, giving all processes the same mapping of variables for efficient use of memory.
-
-Currently, ``distribute()`` can only be called once.  In the future, this function will be callable unlimited times and will be executed lazily and automatically when functions are called.  It will remain available to optionally be called manually.
+Currently, ``distribute()`` can only be called once.  In the future it could be automated or made possible to call multiple times.  Synkhronos data objects can be made before or after distributing, but only after forking.

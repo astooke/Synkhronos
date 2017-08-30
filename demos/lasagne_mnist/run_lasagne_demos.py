@@ -8,9 +8,9 @@ import argparse
 import sys
 import subprocess
 
-SCRIPTS = ["demos/lasagne_mnist_original.py",
-           "demos/lasagne_mnist_cpu_data.py",
-           "demos/lasagne_mnist_gpu_data.py",
+SCRIPTS = ["demos/lasagne_mnist/train_mnist_theano.py",
+           "demos/lasagne_mnist/train_mnist_cpu_data.py",
+           "demos/lasagne_mnist/train_mnist_gpu_data.py",
            ]
 
 

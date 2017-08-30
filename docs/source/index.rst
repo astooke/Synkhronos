@@ -11,21 +11,31 @@ Synkhronos
 A Python Extension for Data Parallelism
 ---------------------------------------
 
-Synkhronos is a Python package for accelerating computation of Theano functions whenever data parallelism applies.  For example, when computing an expectation value over a data set, computation can potentially accelerate by `N` times when the data is split over `N` devices.  Careful control over communication among devices is necessary to achieve favorable speeds; this package includes an effective and straightforward communication framework.
+Synkhronos is a Python package for accelerating computation of Theano functions under data parallelism with multiple GPUs.  The aim of this package is to speed up program execution with minimum changes to user code.  Variables and graphs are constructed as usual with Theano or extensions such as Lasagne.  Synkhronos replicates the user-constructed functions and GPU-memory variables on all devices.  The user calls these functions as in a serial program; parallelism is automated.  
 
-Acceleration is possible with multiple GPUs or even in multi-core CPUs, where the use of multiple Python processes with explicit data parallelism outperforms multi-threaded BLAS operations such as in MKL.  The current version supports only multi-GPU use (CPU support forthcoming), and requires use of Theano's new GPU back-end.  To date, use of multiple processes is still required to ensure full concurrency of GPU-based functions.
+When a Synkhronos function is called, it scatters the input data, executes the underlying Theano function simultaneously on all devices, and reduces the outputs back to the master process.  Functions may also update Theano shared memory variables (GPU-memory) locally on each device.  Synkhronos supports management of these variables across devices, either by reading/writing individually or through collective communications, such as all-reduce, broadcast etc.  Collectives are provided through the NVIDIA Collective Communications Library (NCCL, via PyGPU), or through CPU-based mechanisms.
 
-The aim of this package is to minimize change in user code while leveraging multiple compute devices.  Theano variables and graphs are constructed as usual.  Then, functions are built through this package rather than directly through Theano.  All parallelism is automated and hidden from view.  Worker processes simply wait for signals from the master, and they only perform the same function the master is performing, and always all at the same time.
+Under Multiprocessing, a separate python process is forked for each additional GPU.  Explicit function inputs are scattered via OS shared memory.  This facilitates greater speedup by minimizing and parallelizing memory copies.  Data may be scattered to GPU memories ahead of time for implicit function inputs; this is advantageous for data used repeatedly, device memory permitting.
 
-The only additional algorithmic consideration is communication over Theano shared variables.  A distinct version of each one exists on each GPU, so collective communications, such as `broadcast`, `all-reduce`, and `scatter`, are provided to manage workers' values.  This must be done explicitly with Synkhronos, as Theano function updates apply only locally within the worker.
+Function Batches and Slices
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Achieving the best speedup usually requires one additional implementation consideration.  Distributing data to the workers is achieved through system shared memory (e.g. Multiprocessing's shared memory).  It can be advantageous to write data to this memory before calling a function, thus altering the scheme for Theano inputs to be more like Theano shared variables.  Examples in the following pages show how to do this.
+Synkhronos further extends the Theano interface by supporting indexed and sliced function calls.  Variables contianing entire data sets are passed to Synkhronos functions, with an optional input argument to tell which elements (selected by index in 0-th dimension) to use in the function call.  It is possible to pass in a list of randomized indexes and each process will build its own input data from its assigned subset of these indexes--convenient for shuffling data.  This can also be done for implicit inputs.  
 
-This package is for single-node computing; underlying it is Multiprocessing, not MPI.
+If the input data set is too large to compute on within the device memory, another optional input argument sets the number of "slices" each worker uses to compute over its assigned data.  Results are automatically accumulated over each input slice (each a separate call to the Theano function) within each worker before being reduced back to the master.  This is convenient for running validation or test measurement functions in machine learning, for example.
+
+Other Notes
+~~~~~~~~~~~
+
+This package is for single-node computing.
 
 .. hint::  Use Theano flags ``device=cpu`` and ``force_device=True`` (see :ref:`lasagne_import`).
 
+
 Contents:
+~~~~~~~~~
+
+See the following pages for installation instructions, simple examples, and function reference.  See the folder ``Synkhronos/demos`` for more complete examples; it is suggested to read the code and execute the demos to see printed results.
 
 .. toctree::
    :maxdepth: 2

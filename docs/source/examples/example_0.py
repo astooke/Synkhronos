@@ -5,16 +5,18 @@ import synkhronos as synk
 
 synk.fork()
 x = T.matrix('x')
-y = theano.shared(np.random.randn(10, 20).astype('float32'))
+y = T.vector('y')
 z = T.mean(x.dot(y), axis=0)
-f_th = theano.function([x], z)  # just for comparison
-f = synk.function([x], z)
+f_th = theano.function(inputs=[x, y], outputs=z)
+f = synk.function(inputs=[x], bcast_inputs=y, outputs=z)
 synk.distribute()
 
 x_dat = np.random.randn(100, 10).astype('float32')
-r_th = f_th(x_dat)
-r = f(x_dat)
-r_as_th = f.as_theano(x_dat)
+y_dat = np.random.randn(10, 20).astype('float32')
+x_synk = synk.data(x_dat)
+y_synk = synk.data(y_dat)
+r_th = f_th(x_dat, y_dat)
+r = f(x_synk, y_synk)
+
 assert np.allclose(r, r_th)
-assert np.allclose(r_as_th, r_th)
 print("All assertions passed.")

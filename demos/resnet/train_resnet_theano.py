@@ -1,6 +1,7 @@
 
 import theano
 import theano.tensor as T
+import theano.gpuarray
 # import lasagne
 import lasagne.layers as L
 import time
@@ -50,6 +51,9 @@ def train_resnet(
         update_rule=updates.sgd,  # updates.nesterov_momentum,
         n_epoch=3,
         **update_kwargs):
+
+    # Initialize single GPU.
+    theano.gpuarray.use("cuda")
 
     t_0 = time.time()
     print("Loading data (pretend)")
