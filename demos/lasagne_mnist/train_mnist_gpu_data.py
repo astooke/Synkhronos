@@ -109,7 +109,7 @@ def main(model='mlp', batch_size=500, num_epochs=10):
 
     print("Scattering data to GPUs.")
     scatter_vars = [s_input_train, s_target_train, s_input_val, s_target_val]
-    scatter_vals = [X_train, y_train, X_val, y_val]
+    scatter_vals = [X_train, y_train.astype('int32'), X_val, y_val.astype('int32')]
     synk.scatter(scatter_vars, scatter_vals)
     train_worker_len = min(synk.get_lengths(s_target_train))
     worker_batch_size = batch_size // n_gpu
