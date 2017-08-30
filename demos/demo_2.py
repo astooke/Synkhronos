@@ -1,3 +1,6 @@
+"""
+Demonstrate interactions with synkhronos.Data objects
+"""
 
 import numpy as np
 import theano

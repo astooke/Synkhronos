@@ -1,3 +1,9 @@
+"""
+Demonstrate basic functionality:
+building functions,
+output reductions,
+function call slicing.
+"""
 
 import numpy as np
 import theano

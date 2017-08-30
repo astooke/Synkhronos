@@ -1,3 +1,6 @@
+"""
+Demonstrate interactions with Theano shared variables (GPU memory)
+"""
 
 import numpy as np
 import theano

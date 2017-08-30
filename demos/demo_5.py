@@ -1,3 +1,6 @@
+"""
+Demonstrate optional keyword argument "batch_s" and function slicing
+"""
 
 import numpy as np
 import theano

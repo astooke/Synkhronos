@@ -1,3 +1,7 @@
+"""
+Demonstrate optional function keyword argument "batch",
+"minibatch" synk Data, function slicing.
+"""
 
 import numpy as np
 import theano
