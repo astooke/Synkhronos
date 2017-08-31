@@ -20,7 +20,7 @@ Under Multiprocessing, a separate python process is forked for each additional G
 Function Batches and Slices
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Synkhronos further extends the Theano interface by supporting indexed and sliced function calls.  Variables contianing entire data sets are passed to Synkhronos functions, with an optional input argument to tell which elements (selected by index in 0-th dimension) to use in the function call.  It is possible to pass in a list of randomized indexes and each process will build its own input data from its assigned subset of these indexes--convenient for shuffling data.  This can also be done for implicit inputs.  
+Synkhronos further extends the Theano interface by supporting indexed and sliced function calls.  Variables contianing entire data sets can be passed to Synkhronos functions, with an optional input argument to tell which elements (selected by index in 0-th dimension) to use in the function call.  This can also be done for implicit inputs.  
 
 If the input data set is too large to compute on within the device memory, another optional input argument sets the number of "slices" each worker uses to compute over its assigned data.  Results are automatically accumulated over each input slice (each a separate call to the Theano function) within each worker before being reduced back to the master.  This is convenient for running validation or test measurement functions in machine learning, for example.
 
@@ -44,7 +44,7 @@ See the following pages for installation instructions, simple examples, and func
    pages/installation.rst
    pages/intro_example.rst
    pages/theano_shared.rst
-   pages/lasagne_mnist.rst
+   pages/deep_learning.rst
    pages/functions.rst
 
 
