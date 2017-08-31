@@ -10,7 +10,7 @@ from synkhronos.extensions import updates
 from demos.resnet.common import build_resnet, iter_mb_idxs, load_data
 
 
-def build_funcs(resnet, params, update_rule, **update_kwargs):
+def build_training(resnet, params, update_rule, **update_kwargs):
 
     print("Building training functions")
     x = T.ftensor4('x')
@@ -56,7 +56,7 @@ def train_resnet(
     theano.gpuarray.use("cuda")
 
     t_0 = time.time()
-    print("Loading data (pretend)")
+    print("Loading data (synthetic)")
     train, valid, test = load_data()
 
     x_train, y_train = train
@@ -68,7 +68,7 @@ def train_resnet(
     params = L.get_all_params(resnet.values(), trainable=True)
 
     f_train_minibatch, f_predict = \
-        build_funcs(resnet, params, update_rule, lr=learning_rate, **update_kwargs)
+        build_training(resnet, params, update_rule, lr=learning_rate, **update_kwargs)
 
     t_last = t_1 = time.time()
     print("Total setup time: {:,.1f} s".format(t_1 - t_0))

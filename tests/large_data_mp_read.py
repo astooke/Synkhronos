@@ -2,7 +2,7 @@
 import multiprocessing as mp
 import numpy as np
 import time
-import synkhronos
+# import synkhronos
 from synkhronos.shmemarray import NpShmemArray
 
 N = 1000
@@ -53,7 +53,7 @@ def worker(x, b, rank):
         total_t += elapse
         print(rank, "copy time {}: {:.7f}".format(i, elapse))
         b.wait()
-    print(rank, "total time: {:.4f}".format(total_t))
+    print(rank, "total time: {:.4f}  (data size: {})".format(total_t, new_mat.size))
 
 
 if __name__ == "__main__":

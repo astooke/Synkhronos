@@ -11,7 +11,7 @@ from synkhronos.extensions import updates
 from demos.resnet.common import build_resnet, iter_mb_idxs, load_data
 
 
-def build_funcs(resnet, params, update_rule, **update_kwargs):
+def build_training(resnet, params, update_rule, **update_kwargs):
 
     print("Building training functions")
     x = T.ftensor4('x')
@@ -77,7 +77,7 @@ def train_resnet(
     params = L.get_all_params(resnet.values(), trainable=True)
 
     f_train_minibatch, f_predict = \
-        build_funcs(resnet, params, update_rule, lr=lr, **update_kwargs)
+        build_training(resnet, params, update_rule, lr=lr, **update_kwargs)
 
     synk.distribute()
     synk.broadcast(params)  # (ensure all GPUs have same values)
