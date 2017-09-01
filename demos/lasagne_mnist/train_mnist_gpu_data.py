@@ -33,10 +33,12 @@ def iterate_minibatch_indices(data_len, batchsize, shuffle=False):
 # easier to read.
 
 def main(model='mlp', batch_size=500, num_epochs=10):
-    
+
     # Load the dataset
     print("Loading data...")
     X_train, y_train, X_val, y_val, X_test, y_test = load_dataset()
+    y_train = y_train.astype("int32")  # (some downstream type error on uint8)
+    y_val = y_val.astype("int32")
 
     # Fork worker processes and initilize GPU before building variables.
     n_gpu = synk.fork()
@@ -58,7 +60,7 @@ def main(model='mlp', batch_size=500, num_epochs=10):
     # parameters at each training step. Here, we'll use Stochastic Gradient
     # Descent (SGD) with Nesterov momentum, but Lasagne offers plenty more.
     params = lasagne.layers.get_all_params(network, trainable=True)
-    
+
     grad_updates, param_updates, grad_shared = updates.nesterov_momentum(
         loss, params, learning_rate=0.01, momentum=0.9)
     # updates = lasagne.updates.nesterov_momentum(
@@ -104,12 +106,15 @@ def main(model='mlp', batch_size=500, num_epochs=10):
     test_fn = synk.function([input_var, target_var],
                             outputs=[test_loss, test_acc])
 
+    # After building all functions, give them to workers.
+    synk.distribute()
+
     # Put data into OS shared memory for worker access.
-    X_test, y_test = val_fn.build_inputs(X_test, y_test)
+    X_test, y_test = test_fn.build_inputs(X_test, y_test)
 
     print("Scattering data to GPUs.")
     scatter_vars = [s_input_train, s_target_train, s_input_val, s_target_val]
-    scatter_vals = [X_train, y_train.astype('int32'), X_val, y_val.astype('int32')]
+    scatter_vals = [X_train, y_train, X_val, y_val]
     synk.scatter(scatter_vars, scatter_vals)
     train_worker_len = min(synk.get_lengths(s_target_train))
     worker_batch_size = batch_size // n_gpu

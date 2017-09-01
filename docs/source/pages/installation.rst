@@ -7,7 +7,7 @@ To view the source code and / or install::
     cd Synkhronos
     pip install .
 
-Third party dependencies include ``Theano`` with its new GPU back-end, ``libgpuarray``, ``nccl`` for collective GPU communications, ``posix_ipc`` for allocating shared memory, and ``pyzmq`` for other CPU-based communications.
+Third party dependencies include ``Theano`` with its new GPU back-end, ``libgpuarray``, ``nccl`` (v1) for collective GPU communications, ``posix_ipc`` for allocating shared memory, and ``pyzmq`` for other CPU-based communications.
 
 PyPI package (possibly) forthcoming.
 

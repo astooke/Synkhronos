@@ -1,23 +1,23 @@
 s initial:
- [ 1.  1.  1.]
+ [ 1.  1.]
 
 s after Theano call:
- [ 10.  10.  10.]
+ [ 10.  10.]
 
 local s after reset and Synkhronos call:
- [ 3.  3.  3.]
+ [ 3.  3.]
 
 gathered s:
- [gpuarray.array([[ 3.,  3.,  3.],
-       [ 7.,  7.,  7.]], dtype=float32)]
+ [[ 3.  3.]
+ [ 7.  7.]]
 
 local s after in-place reduce:
- [ 10.  10.  10.]
+ [ 10.  10.]
 
 gathered s after reduce:
- [gpuarray.array([[ 10.,  10.,  10.],
-       [  7.,   7.,   7.]], dtype=float32)]
+ [[ 10.  10.]
+ [  7.   7.]]
 
 gathered s after local reset, broadcast, Synkhronos call, and all-reduce:
- [gpuarray.array([[ 10.,  10.,  10.],
-       [ 10.,  10.,  10.]], dtype=float32)]
+ [[ 10.  10.]
+ [ 10.  10.]]

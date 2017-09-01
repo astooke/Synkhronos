@@ -1,7 +1,11 @@
-Detected and attempting to use 2 GPUs...
-Using cuDNN version 5105 on context None
+Synkhronos attempting to use 2 of 2 detected GPUs...
+Using cuDNN version 6020 on context None
+Preallocating 5677/8110 Mb (0.700000) on cuda1
+Using cuDNN version 6020 on context None
+Preallocating 5679/8113 Mb (0.700000) on cuda0
 Mapped name None to device cuda1: GeForce GTX 1080 (0000:01:00.0)
-Using cuDNN version 5105 on context None
 Mapped name None to device cuda0: GeForce GTX 1080 (0000:02:00.0)
-Synkhronos: 2 GPUs succesfully initialized, master rank: 0
+Synkhronos: 2 GPUs initialized, master rank: 0
+Synkhronos distributing functions...
+...distribution complete (0 s).
 All assertions passed.

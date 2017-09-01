@@ -1,5 +1,4 @@
 
-import argparse
 import numpy as np
 import theano
 import theano.tensor as T
@@ -48,7 +47,7 @@ def main(n_gpu=2):
     barrier.wait()
     time.sleep(1)
     barrier.wait()
-    test_the_function(f_train, name="original")
+    test_the_function(f_train, name="original", barrier=barrier)
 
     for p in procs:
         p.join()
@@ -65,10 +64,10 @@ def worker(rank, barrier):
     # f_unpkl.trust_input = True
 
     barrier.wait()
-    test_the_function(f_unpkl, name="unpickled", rank=rank)
+    test_the_function(f_unpkl, name="unpickled", rank=rank, barrier=barrier)
 
 
-def test_the_function(f, name="original", rank=0):
+def test_the_function(f, name="original", rank=0, barrier=None):
     print("Making synthetic data")
     x_dat = np.random.randn(32, 3, 224, 224).astype("float32")
     y_dat = np.random.randint(low=0, high=1000, size=(32, 1)).astype("int32")
@@ -77,9 +76,13 @@ def test_the_function(f, name="original", rank=0):
     r = 0
     for _ in range(10):
         r += f(x_dat, y_dat)
+    if barrier is not None:
+        barrier.wait()
     t_0 = time.time()
     for _ in range(100):
         r += f(x_dat, y_dat)
+        if barrier is not None:
+            barrier.wait()
     t_1 = time.time()
     print("rank {}: {} function ran in {:,.3f} s".format(rank, name, t_1 - t_0))
 

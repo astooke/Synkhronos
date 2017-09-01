@@ -33,7 +33,7 @@ def iterate_minibatch_indices(data_len, batchsize, shuffle=False):
 # easier to read.
 
 def main(model='mlp', batch_size=500, num_epochs=10):
-    
+
     # Load the dataset
     print("Loading data...")
     X_train, y_train, X_val, y_val, X_test, y_test = load_dataset()
@@ -58,7 +58,7 @@ def main(model='mlp', batch_size=500, num_epochs=10):
     # parameters at each training step. Here, we'll use Stochastic Gradient
     # Descent (SGD) with Nesterov momentum, but Lasagne offers plenty more.
     params = lasagne.layers.get_all_params(network, trainable=True)
-    
+
     grad_updates, param_updates, grad_shared = updates.nesterov_momentum(
         loss, params, learning_rate=0.01, momentum=0.9)
     # updates = lasagne.updates.nesterov_momentum(
@@ -78,7 +78,7 @@ def main(model='mlp', batch_size=500, num_epochs=10):
 
     # Compile a function performing a training step on a mini-batch (by giving
     # the updates dictionary) and returning the corresponding training loss:
-    train_grad_fn = synk.function([input_var, target_var], outputs=loss, 
+    train_grad_fn = synk.function([input_var, target_var], outputs=loss,
                                   updates=grad_updates)
     train_update_fn = synk.function([], updates=param_updates)
     # train_fn = theano.function([input_var, target_var], loss, updates=updates)
@@ -87,6 +87,9 @@ def main(model='mlp', batch_size=500, num_epochs=10):
     val_fn = synk.function([input_var, target_var],
                            outputs=[test_loss, test_acc])
     # val_fn = theano.function([input_var, target_var], [test_loss, test_acc])
+
+    # After building all functions, give them to workers.
+    synk.distribute()
 
     # Put data into OS shared memory for worker access.
     X_train, y_train = val_fn.build_inputs(X_train, y_train)

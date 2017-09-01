@@ -3,8 +3,8 @@ import theano
 import theano.tensor as T
 import synkhronos as synk
 
-synk.fork()
-s_init = np.ones(3, dtype='float32')
+synk.fork(2)
+s_init = np.ones(2, dtype='float32')
 x = T.matrix('x')
 s = theano.shared(s_init, name='s')
 f = synk.function([x], updates=[(s, T.sum(x * s, axis=0))])
@@ -35,5 +35,5 @@ synk.broadcast(s, s_init)
 f(x_dat)
 synk.all_reduce(s, op="sum")
 gathered_s = synk.gather(s, nd_up=1)
-print("\ngathered s after local reset, broadcast, Synkhronos call, "
+print("\ngathered s after reset broadcast, Synkhronos call, "
     "and all-reduce:\n", gathered_s)

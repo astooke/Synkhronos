@@ -31,12 +31,17 @@ Lastly, to propagate the result to all workers and observe this effect, call the
     :language: text
     :lines: 20-
 
-Notice the use of ``broadcast()`` to set the values in all GPUs.
+Notice the use of ``broadcast()`` to set the same values in all GPUs.
 
 Notes on Collectives
 ~~~~~~~~~~~~~~~~~~~~
 
-Collectives can be called on any Theano shared variable used in a Synkhronos function.  CPU- and GPU-based collectives are available through the same interface.  Results of a GPU collective communication may be returned as a new GPU array in the master, but no collective can create a new array (not associated with a Theano shared variable) in a worker.  
+Collectives can be called on any Theano shared variable used in a Synkhronos function.  CPU- and GPU-based collectives are available through the same interface.  Results of a GPU collective communication may be returned as a new GPU array in the master, but no collective can create a new array (not associated with a Theano shared variable) in a worker.
 
 Synkhronos provides the averaging reduction operation.  The reduce operation ``avg`` is not present in NCCL; Synkhronos uses ``sum`` and then multiplies by the reciprocal number of GPUs.
+
+Theano Shared Variable Sizes
+----------------------------
+
+Beware that the ``nccl`` collectives assume the same shape variable on each GPU, but it is possible to have different shapes in Synkhronos.  In particular, ``gather`` and ``all_gather`` may leave off data or add extra data without raising an exception--in this case use CPU-based gather operations.  See ``demos/demo_3.py`` for more about manipulating GPU-variables in workers.
 

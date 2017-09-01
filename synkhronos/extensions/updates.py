@@ -91,10 +91,10 @@ def nonflat_grads(loss, params):
 ###############################################################################
 
 
-def sgd(loss, params, lr):
+def sgd(loss, params, learning_rate):
     grad_shared_flat, flat_grad, unflat_grads = flat_unflat_grads(loss, params)
     grad_updates = [(grad_shared_flat, flat_grad)]
-    param_updates = [(p, p - lr * g) for p, g in zip(params, unflat_grads)]
+    param_updates = [(p, p - learning_rate * g) for p, g in zip(params, unflat_grads)]
     return grad_updates, param_updates, grad_shared_flat
 
 
@@ -120,19 +120,19 @@ def apply_nesterov_momentum(param_updates, momentum=0.9):
     return updates
 
 
-def momentum(loss, params, lr, momentum=0.9):
-    grad_updates, param_updates, grads_shared = sgd(loss, params, lr)
+def momentum(loss, params, learning_rate, momentum=0.9):
+    grad_updates, param_updates, grads_shared = sgd(loss, params, learning_rate)
     param_updates = apply_momentum(param_updates, momentum=momentum)
     return grad_updates, param_updates, grads_shared
 
 
-def nesterov_momentum(loss, params, lr, momentum=0.9):
-    grad_updates, param_updates, grads_shared = sgd(loss, params, lr)
+def nesterov_momentum(loss, params, learning_rate, momentum=0.9):
+    grad_updates, param_updates, grads_shared = sgd(loss, params, learning_rate)
     param_updates = apply_nesterov_momentum(param_updates, momentum=momentum)
     return grad_updates, param_updates, grads_shared
 
 
-def adagrad(loss, params, lr=1.0, epsilon=1e-6):
+def adagrad(loss, params, learning_rate=1.0, epsilon=1e-6):
     grad_shared_flat, flat_grad, unflat_grads = flat_unflat_grads(loss, params)
     grad_updates = [(grad_shared_flat, flat_grad)]
     param_updates = list()
@@ -142,11 +142,11 @@ def adagrad(loss, params, lr=1.0, epsilon=1e-6):
                              broadcastable=p.broadcastable)
         accu_new = accu + g ** 2
         param_updates += [(accu, accu_new)]
-        param_updates += [(p, p - (lr * g / T.sqrt(accu_new + epsilon)))]
+        param_updates += [(p, p - (learning_rate * g / T.sqrt(accu_new + epsilon)))]
     return grad_updates, param_updates, grad_shared_flat
 
 
-def rmsprop(loss, params, lr=1.0, rho=0.9, epsilon=1e-6):
+def rmsprop(loss, params, learning_rate=1.0, rho=0.9, epsilon=1e-6):
     grad_shared_flat, flat_grad, unflat_grads = flat_unflat_grads(loss, params)
     grad_updates = [(grad_shared_flat, flat_grad)]
     one = T.constant(1)
@@ -157,11 +157,11 @@ def rmsprop(loss, params, lr=1.0, rho=0.9, epsilon=1e-6):
                              broadcastable=p.broadcastable)
         accu_new = rho * accu + (one - rho) * g ** 2
         param_updates += [(accu, accu_new)]
-        param_updates += [(p, p - (lr * g / T.sqrt(accu_new + epsilon)))]
+        param_updates += [(p, p - (learning_rate * g / T.sqrt(accu_new + epsilon)))]
     return grad_updates, param_updates, grad_shared_flat
 
 
-def adadelta(loss, params, lr=1.0, rho=0.95, epsilon=1e-6):
+def adadelta(loss, params, learning_rate=1.0, rho=0.95, epsilon=1e-6):
     grad_shared_flat, flat_grad, unflat_grads = flat_unflat_grads(loss, params)
     grad_updates = [(grad_shared_flat, flat_grad)]
     one = T.constant(1)
@@ -176,18 +176,18 @@ def adadelta(loss, params, lr=1.0, rho=0.95, epsilon=1e-6):
         update = g * T.sqrt(delta_accu + epsilon) / T.sqrt(accu_new + epsilon)
         delta_accu_new = rho * delta_accu + (one - rho) * update ** 2
         param_updates += [(accu, accu_new)]
-        param_updates += [(p, p - lr * update)]
+        param_updates += [(p, p - learning_rate * update)]
         param_updates += [(delta_accu, delta_accu_new)]
     return grad_updates, param_updates, grad_shared_flat
 
 
-def adam(loss, params, lr=0.001, beta1=0.9, beta2=0.999, epsilon=1e-8):
+def adam(loss, params, learning_rate=0.001, beta1=0.9, beta2=0.999, epsilon=1e-8):
     grad_shared_flat, flat_grad, unflat_grads = flat_unflat_grads(loss, params)
     grad_updates = [(grad_shared_flat, flat_grad)]
     t_prev = theano.shared(np.array(0, dtype=theano.config.floatX))
     one = T.constant(1)
     t = t_prev + one
-    a_t = lr * T.sqrt(one - beta2 ** t) / (one - beta1 ** t)
+    a_t = learning_rate * T.sqrt(one - beta2 ** t) / (one - beta1 ** t)
     param_updates = list()
     for p, g in zip(params, unflat_grads):
         value = p.get_value(borrow=True)
@@ -203,13 +203,13 @@ def adam(loss, params, lr=0.001, beta1=0.9, beta2=0.999, epsilon=1e-8):
     return grad_updates, param_updates, grad_shared_flat
 
 
-def adamax(loss, params, lr=0.002, beta1=0.9, beta2=0.999, epsilon=1e-8):
+def adamax(loss, params, learning_rate=0.002, beta1=0.9, beta2=0.999, epsilon=1e-8):
     grad_shared_flat, flat_grad, unflat_grads = flat_unflat_grads(loss, params)
     grad_updates = [(grad_shared_flat, flat_grad)]
     t_prev = theano.shared(np.array(0, dtype=theano.config.floatX))
     one = T.constant(1)
     t = t_prev + one
-    a_t = lr / (one - beta1 ** t)
+    a_t = learning_rate / (one - beta1 ** t)
     param_updates = list()
     for p, g in zip(params, unflat_grads):
         value = p.get_value(borrow=True)
@@ -225,9 +225,9 @@ def adamax(loss, params, lr=0.002, beta1=0.9, beta2=0.999, epsilon=1e-8):
     return grad_updates, param_updates, grad_shared_flat
 
 
-def sgd_nonflat(loss, params, lr):
+def sgd_nonflat(loss, params, learning_rate):
     """ Provided for speed test to measure improvement from flattening """
     grads, grads_shared = nonflat_grads(loss, params)
     grad_updates = [(g_s, g) for g_s, g in zip(grads_shared, grads)]
-    param_updates = [(p, p - lr * g_s) for p, g_s in zip(params, grads_shared)]
+    param_updates = [(p, p - learning_rate * g_s) for p, g_s in zip(params, grads_shared)]
     return grad_updates, param_updates, grads_shared
