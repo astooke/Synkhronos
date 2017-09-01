@@ -1,6 +1,6 @@
 
 """
-Call this script with varying batch sizes (e.g. 500; 5,000) and watch the time
+Call this script with varying batch sizes (e.g. 500, 5000) and watch the time
 per epoch to see multi-GPU speedup.
 """
 

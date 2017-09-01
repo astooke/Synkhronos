@@ -20,6 +20,9 @@ It is also possible to scatter a data set to GPU memories in Theano shared varia
 
 Note that the ``batch`` and ``batch_s`` kwargs work differently. Applied before scattering, ``batch`` selects from the whole dataset; ``batch_s`` applies after scattering and selects from workers' datasets.  See ``demos/demo_4.py`` and ``demos/demo_5.py`` for examples.
 
+.. hint::  It is not necessary for the length of a selected data input to be divisible by the number of GPUs.  Data will be scattered as evenly as possible.  Only when averaging is this not strictly mathematically correct; the results from all workers are averaged with equal weighting.
+
+
 Other Notes
 -----------
 

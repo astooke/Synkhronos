@@ -68,7 +68,7 @@ def train_resnet(
     x_test, y_test = [synk.data(d) for d in test]
 
     full_mb_size = batch_size * n_gpu
-    lr = learning_rate * n_gpu  # (one technique for larger minibatches)
+    learning_rate = learning_rate * n_gpu  # (one technique for larger minibatches)
     num_valid_slices = len(x_valid) // n_gpu // batch_size
     print("Will compute validation using {} slices".format(num_valid_slices))
 
@@ -76,8 +76,9 @@ def train_resnet(
     resnet = build_resnet()
     params = L.get_all_params(resnet.values(), trainable=True)
 
-    f_train_minibatch, f_predict = \
-        build_training(resnet, params, update_rule, lr=lr, **update_kwargs)
+    f_train_minibatch, f_predict = build_training(resnet, params, update_rule,
+                                                  learning_rate=learning_rate,
+                                                  **update_kwargs)
 
     synk.distribute()
     synk.broadcast(params)  # (ensure all GPUs have same values)

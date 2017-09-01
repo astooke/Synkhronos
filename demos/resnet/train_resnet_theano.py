@@ -67,8 +67,9 @@ def train_resnet(
     resnet = build_resnet()
     params = L.get_all_params(resnet.values(), trainable=True)
 
-    f_train_minibatch, f_predict = \
-        build_training(resnet, params, update_rule, lr=learning_rate, **update_kwargs)
+    f_train_minibatch, f_predict = build_training(resnet, params, update_rule,
+                                                  learning_rate=learning_rate,
+                                                  **update_kwargs)
 
     t_last = t_1 = time.time()
     print("Total setup time: {:,.1f} s".format(t_1 - t_0))
