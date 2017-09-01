@@ -6,6 +6,7 @@ Function Reference
    :members: fork, close, function, distribute
 
 .. autoclass:: synkhronos.function_module.Function
+   :members: __call__, build_inputs, as_theano, output_modes, update_modes, name
 
 .. automodule:: synkhronos
    :members: data

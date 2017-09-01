@@ -453,18 +453,43 @@ class Function(FunctionHelpers):
                  num_slices=1, **kwargs):
         """ Callable as in Theano function.
 
-        When called, Synkhronos functions:
+        When called, a Synkhronos function:
 
-            1. Share input data,
-            2. Signal to workers to start and what to do,
-            3. Call the local theano function on assigned data subset,
-            4. Collect results from workers and return it.
-
-        Theano function keyword argument ``output_subset`` is supported.
+            1. Assigns input data evenly across all GPUs,
+            2. Signals to workers to start and which function to call,
+            3. Calls the underlying Theano function on assigned data subset,
+            4. Collect results from workers and returns them.
 
         Args:
-            *args (data): Normal data inputs to Theano function
-            **kwargs (data): Normal data inputs to Theano function
+            *args (Data): Normal data inputs to Theano function
+            output_subset: as in Theano
+            batch: indexes to select from scattering input data (see notes)
+            batch_s: indexes to select from scattered implicit inputs (see notes)
+            num_slices (int): call the function over this many slices of the
+                selected, scattered data and accumulate results (avoid
+                out-of-memory)
+            **kwargs (Data): Normal data inputs to Theano function
+
+        Batching:
+            The kwarg ``batch`` can be of types: (int, slice, list (of ints),
+            numpy array (1-d, int)). It applies *before* scattering, to the
+            whole input data set.  If type int, this acts as data[:int].
+
+            The kwarg ``batch_s`` can be of type (slice, list (of ints), numpy
+            array (1-d, int)) or a list of all the same type (one of those
+            three), with one entry for each GPU. It applies *after* scattering,
+            to data already residing on the GPU. If only one of the above types
+            is provided, rather than a list of them, it is used in all GPUs.
+
+            In both ``batch`` and ``batch_s``, full slice types are not
+            supported; start and stop fields must be ints, step None.
+
+        Slicing:
+            Function slicing by the ``num_slices`` kwarg applies within each worker,
+            after individual worker data assignment.  Results are accumulated
+            within each worker and reduced only once at the end.  Likewise, any
+            updates are computed and accumulated using the original variable
+            values, and the updates are applied only once at the end.
 
         Raises:
             RuntimeError: If not distributed or if synkhronos closed.
@@ -483,14 +508,18 @@ class Function(FunctionHelpers):
 
     @property
     def name(self):
+        """As in Theano functions."""
         return self._functions.theano_function.name
 
     @property
     def output_modes(self):
+        """Returns the reduce operations used to collect function outputs."""
         return self._output_modes
 
     @property
     def update_modes(self):
+        """Returns the reduce operations used to accumulate updates (only when
+        slicing)"""
         return self._update_modes
 
     def as_theano(self, *args, **kwargs):
@@ -514,12 +543,24 @@ class Function(FunctionHelpers):
 
         return self._functions.theano_function(*args, **kwargs)
 
-    def build_inputs(self, *args, force_cast=False, oversize=1, minibatch=False,
+    def build_inputs(self, *args, force_cast=False, oversize=1., minibatch=False,
                      **kwargs):
-        """ convenience method which internally calls synkhronos.data() for
-        each input variable associated with this function; provide data inputs
+        """Convenience method which internally calls ``synkhronos.data()`` for
+        each input variable associated with this function.  Provide data inputs
         as if calling the Theano function.
-        # TODO: move force_cast and oversize to function signature?
+
+        Args:
+            *args: data inputs
+            force_cast (bool, optional): see ``synkhronos.data()``
+            oversize (float [1,2], optional): see ``synkhronos.data()``
+            minibatch (bool, optional): see ``synkhronos.data()``
+            **kwargs: data inputs
+
+        The kwargs ``force_cast``, ``oversize``, and ``minibatch`` are passed
+        to all calls to ``synkhronos.data()``
+
+        Returns:
+            synkhronos.data_module.Data: data object for function input.
         """
         ordered_inputs = self._order_inputs(args, kwargs)
         if not isinstance(minibatch, list):

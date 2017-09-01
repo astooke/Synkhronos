@@ -49,12 +49,14 @@ def function(inputs, outputs=None, bcast_inputs=None, updates=None,
       may include triples, as in (var, update, reduce-op).  Unlike for outputs,
       the reduce-op here applies only when using function slicing.  Every slice
       is computed using the original values, and the update is accumulated over
-      the slices.  At the end of the function call, all updates are applied only
+      the slices.  (This may impose some limits on the form of the update
+      expression.) At the end of the function call, all updates are applied only
       locally, within each worker.  This provides clear control to user over
       when to communicate.
 
     Returns:
-        sykhronos.Function: callable object, replacing a theano.Function
+        sykhronos.function_module.Function: callable object, replacing a
+        theano.Function
 
     Raises:
         RuntimeError: If Sykhronos not yet forked, or if already distributed
@@ -148,19 +150,16 @@ def function(inputs, outputs=None, bcast_inputs=None, updates=None,
 
 
 def distribute():
-    """Sets up theano functions from master on workers.
+    """Replicates all Synkhronos functions and their Theano shared variables in
+    worker processes / GPUs.  It must be called after building the last
+    Synkhronos function and before calling any Synkhronos function.
 
-    Pickles all theano functions built with this package (i.e. using
-    ``synkhronos.function()``) into one file, which workers unpickle.  Theano's
-    behavior is to include all shared variable values in the file.  Workers are
-    aware of correspondences among input and shared variables used across
-    multiple functions.
-
-    In the future, distribution will happen automatically, lazily at the time of
-    any function call when it is necessary.  It will remain optional for the
-    user to call, as it may be time-consuming.
-
-    The pickle file is automatically deleted by a worker.
+    It pickles all underlying Theano  functions into one file, which workers
+    unpickle.  All Theano shared variable data is included, and correspondences
+    between variables across functions is preserved.  The pickle file is
+    automatically deleted by a worker.  The default file location is in the
+    directory synkhronos/pkl/, but this can be changed by modifying ``PKL_PATH``
+    in synkhronos/util.py.
 
     Raises:
         RuntimeError: If not yet forked or if already distributed.
