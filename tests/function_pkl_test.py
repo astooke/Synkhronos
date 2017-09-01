@@ -12,7 +12,8 @@ import multiprocessing as mp
 import sys
 sys.setrecursionlimit(50000)
 
-N_CALLS = 10
+N_CALLS = 20
+PROFILE = True
 
 
 def build_train_func(rank=0, **kwargs):
@@ -67,7 +68,11 @@ def test_one_process(gpu=0):
 
 def test_multi_process_sequence(n_gpu=2, worker_func_maker=unpickle_func):
     barrier = mp.Barrier(n_gpu)
-    procs = [mp.Process(target=sequence_worker,
+    if PROFILE:
+        target = seq_profiling_worker
+    else:
+        target = sequence_worker
+    procs = [mp.Process(target=target,
                         args=(rank, n_gpu, barrier, worker_func_maker))
         for rank in range(1, n_gpu)]
     for p in procs:
@@ -105,7 +110,11 @@ def sequence_worker(rank, n_gpu, barrier, function_maker):
 
 def test_multi_process_simultaneous(n_gpu=2, worker_func_maker=unpickle_func, bar_loop=False):
     barrier = mp.Barrier(n_gpu)
-    procs = [mp.Process(target=simultaneous_worker,
+    if PROFILE:
+        target = sim_profiling_worker
+    else:
+        target = simultaneous_worker
+    procs = [mp.Process(target=target,
                         args=(rank, worker_func_maker, barrier, bar_loop))
             for rank in range(1, n_gpu)]
     for p in procs:
@@ -131,7 +140,7 @@ def simultaneous_worker(rank, function_maker, barrier, bar_loop):
     barrier.wait()
     f_train, name = function_maker(rank)
     barrier.wait()
-    test_the_function(f_train, name=name, barrier=barrier, bar_loop=bar_loop)
+    test_the_function(f_train, name=name, rank=rank, barrier=barrier, bar_loop=bar_loop)
 
 
 def test_the_function(f, name="original", rank=0, barrier=None, bar_loop=False):
@@ -153,6 +162,20 @@ def test_the_function(f, name="original", rank=0, barrier=None, bar_loop=False):
     t_1 = time.time()
     print("rank {}: {} function ran in {:,.3f} s  ({} calls)".format(
         rank, name, t_1 - t_0, N_CALLS))
+
+
+def seq_profiling_worker(*args):
+    import cProfile
+    rank = args[0]
+    cProfile.runctx('sequence_worker(*args)', locals(), globals(),
+        "sequence_worker_{}.prof".format(rank))
+
+
+def sim_profiling_worker(*args):
+    import cProfile
+    rank = args[0]
+    cProfile.runctx('simultaneous_worker(*args)', locals(), globals(),
+        "simultaneous_worker_{}.prof".format(rank))
 
 
 if __name__ == "__main__":
