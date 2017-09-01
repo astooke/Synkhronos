@@ -16,6 +16,25 @@ from .worker import worker_main, profiling_worker
 
 def fork(n_parallel=None, use_gpu=True, master_rank=0,
          profile_workers=False, max_n_var=1000, max_dim=16):
+    """Forks a Python process for each additional GPU, initializes GPUs.  Call
+    before building any Theano GPU-variables or Synkhronos functions.
+
+    Args:
+        n_parallel (None, optional): Number of GPUs to use (default uses all)
+        use_gpu (bool, optional): Inactive (possibly future CPU-only mode)
+        master_rank (int, optional): GPU to use in master process
+        profile_workers (bool, optional): If True, records cProfiles of workers
+            (see ``synkhronos/worker.py`` for details)
+        max_n_var (int, optional): Max number of variables in a function call
+        max_dim (int, optional): Max number of dimensions of any variable
+
+    Returns:
+        int: Number of GPUs using.
+
+    Raises:
+        NotImplementedError: If ``use_gpu==False``
+        RuntimeError: If already forked.
+    """
     if exct.state.forked:
         raise RuntimeError("Only fork once.")
     target = profiling_worker if profile_workers else worker_main

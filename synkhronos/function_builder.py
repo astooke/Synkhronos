@@ -24,6 +24,44 @@ synk_functions = list()
 
 def function(inputs, outputs=None, bcast_inputs=None, updates=None,
              givens=None, sliceable_shareds=None, **kwargs):
+    """Replacement for ``theano.function()``, with a similar interface.  Builds
+    underlying Theano functions, including support for function slicing.
+
+    Args:
+        inputs: as in Theano, to be scattered among workers
+        outputs: as in Theano, with option to specify reduce operation (see
+            notes below)
+        bcast_inputs:  as inputs in Theano, to be broadcast to all workers
+        updates: as in Theano, with option to specify reduct operation (see
+            notes below)
+        givens: as in Theano
+        sliceable_shareds: any implicit inputs (Theano shared variables) acting
+            as data-parallel data (i.e. to be subjected to the kwarg ``batch_s``
+            and /or to function slicing) must be listed here
+        **kwargs: passed on to all internal calls to ``theano.function()``
+
+    Reduce Operations:
+      Outputs: May be specified simply as Theano tensor variables, as in normal
+      Theano, or as two-tuples, as in (var, reduce-op), where reduce-op can be:
+      "avg", "sum", "max", "min", "prod", or None.  Default is "avg".
+
+      Updates: May be specified as a list of two-tuples, as in normal Theano, or
+      may include triples, as in (var, update, reduce-op).  Unlike for outputs,
+      the reduce-op here applies only when using function slicing.  Every slice
+      is computed using the original values, and the update is accumulated over
+      the slices.  At the end of the function call, all updates are applied only
+      locally, within each worker.  This provides clear control to user over
+      when to communicate.
+
+    Returns:
+        sykhronos.Function: callable object, replacing a theano.Function
+
+    Raises:
+        RuntimeError: If Sykhronos not yet forked, or if already distributed
+        TypeError: If incorrect format for arguments.
+        ValueError: If entry in ``sliceable_shareds`` is not used in function,
+            or for invalid reduce operation requested.
+    """
     if not exct.state.forked:
         raise RuntimeError("Must fork before making functions for GPU.")
     if exct.state.distributed:
@@ -43,7 +81,7 @@ def function(inputs, outputs=None, bcast_inputs=None, updates=None,
         outputs=reg_outputs,
         updates=updates,
         givens=givens,
-        **kwargs,
+        **kwargs
     )
 
     functions = struct(theano_function=theano_function)
@@ -52,7 +90,7 @@ def function(inputs, outputs=None, bcast_inputs=None, updates=None,
         outputs=gpu_outputs,
         updates=updates,
         givens=givens,
-        **kwargs,
+        **kwargs
     )
 
     if not updates and not sliceable_shareds:
@@ -60,7 +98,7 @@ def function(inputs, outputs=None, bcast_inputs=None, updates=None,
             inputs=inputs + bcast_inputs,
             outputs=gpu_outputs + sliced_update_outs,
             givens=givens,
-            **kwargs,
+            **kwargs
         )
 
     if sliceable_shareds:
@@ -72,26 +110,26 @@ def function(inputs, outputs=None, bcast_inputs=None, updates=None,
             outputs=gpu_outputs,
             updates=updates,
             givens=slc_givens,
-            **kwargs,
+            **kwargs
         )
         functions["lst_in"] = theano.function(
             inputs=inputs + bcast_inputs + [lst_input],
             outputs=gpu_outputs,
             updates=updates,
             givens=lst_givens,
-            **kwargs,
+            **kwargs
         )
         functions["sliced_slc_in"] = theano.function(
             inputs=inputs + bcast_inputs + slc_inputs,
             outputs=gpu_outputs + sliced_update_outs,
             givens=slc_givens,
-            **kwargs,
+            **kwargs
         )
         functions["sliced_lst_in"] = theano.function(
             inputs=inputs + bcast_inputs + [lst_input],
             outputs=gpu_outputs + sliced_update_outs,
             givens=lst_givens,
-            **kwargs,
+            **kwargs
         )
 
     synk_function = Function(ID=len(synk_functions),
@@ -158,7 +196,7 @@ def process_outputs(outputs):
     output_vars = list()
     output_modes = list()
     from theano.gpuarray.type import GpuArrayVariable
-    len_err = ValueError("Output tuples must be length 2: (var, collect_mode).")
+    len_err = TypeError("Output tuples must be length 2: (var, collect_mode).")
     if isinstance(outputs, tuple):
         if len(outputs) != 2: raise len_err
         output_vars.append(outputs[0])
