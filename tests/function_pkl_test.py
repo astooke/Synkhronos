@@ -13,7 +13,7 @@ import sys
 sys.setrecursionlimit(50000)
 
 N_CALLS = 20
-PROFILE = True
+PROFILE = False
 
 
 def build_train_func(rank=0, **kwargs):
@@ -51,7 +51,7 @@ def unpickle_func(rank=0, master_rank=0):
         print("Unpickling function (in worker {})".format(rank))
     with open("test_pkl.pkl", "rb") as f:
         f_unpkl = pickle.load(f)
-    # f_unpkl.trust_input = True
+    # f_unpkl.trust_input = True  # (may avoid slowdown)
     return f_unpkl, "unpickled"
 
 
@@ -180,7 +180,47 @@ def sim_profiling_worker(*args):
 
 if __name__ == "__main__":
     kwargs = {}
-    if len(sys.argv) > 1:
+    if len(sys.argv) == 1 or sys.argv[1] in ["h", "-h", "help", "--help"]:
+        help_text = """
+        This script is for testing running speed of Theano functions before vs
+        after pickling.  It uses an SGD training function on ResNet-50, taken
+        from the demos/ folder.  A few different modes are possible, examples:
+
+        python tests/function_pkl_test.py 1
+        Uses only one GPU and tests the original + unpickled function on it
+
+        python tests/function_pkl_test.py 1 2
+        Same as above but uses "cuda2"
+
+        python tests/function_pkl_test.py 2 seq unpkl
+        Uses 2 GPUs
+        Runs the functions in sequence (one worker at a time)
+        workers use unpickled function
+
+        python tests/function_pkl_test.py 3 seq orig
+        Uses 3 GPUs
+        Runs the functions in sequence
+        workers build their own function (no unpickled functions)
+
+        python tests/function_pkl_test.py 2 sim unpkl
+        Uses 2 GPUs
+        All GPUs start at same time (including master)
+        workers use unpickled function
+
+        python tests/function_pkl_test.py 8 sim orig c
+        Uses 8 GPUs
+        All GPUs start at same time
+        workers build their own functions
+        (any character) barrier.wait() called at every function call in loop
+
+        Can use any combination of (seq, sim), (orig, pkl) (, c)
+
+        Use PROFILE at the top of the file to turn on/off worker profiling
+
+        (theano v0.9.0 may require function.trust_input = True in unpickled)
+
+        """
+    else:
         n_gpu = int(sys.argv[1])
         if n_gpu == 1:
             if len(sys.argv) > 2:
