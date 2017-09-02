@@ -14,6 +14,7 @@ sys.setrecursionlimit(50000)
 
 N_CALLS = 20
 PROFILE = False
+BATCH = 32
 
 
 def build_train_func(rank=0, **kwargs):
@@ -145,18 +146,23 @@ def simultaneous_worker(rank, function_maker, barrier, bar_loop):
 
 def test_the_function(f, name="original", rank=0, barrier=None, bar_loop=False):
     print("Making synthetic data")
-    x_dat = np.random.randn(32, 3, 224, 224).astype("float32")
-    y_dat = np.random.randint(low=0, high=1000, size=(32, 1)).astype("int32")
+    data_len = BATCH * 10
+    x_dat = np.random.randn(data_len, 3, 224, 224).astype("float32")
+    y_dat = np.random.randint(low=0, high=1000, size=(data_len, 1)).astype("int32")
+
+    # (Get different data each time)
+    sample_idxs = [np.random.randint(low=0, high=data_len - 1, size=BATCH)
+        for _ in range(N_CALLS)]
 
     print("rank: {} Running {} function".format(rank, name))
     r = 0
     for _ in range(10):
-        r += f(x_dat, y_dat)
+        r += f(x_dat[:BATCH], y_dat[:BATCH])
     if barrier is not None:
         barrier.wait()
     t_0 = time.time()
-    for _ in range(N_CALLS):
-        r += f(x_dat, y_dat)
+    for batch in sample_idxs:
+        r += f(x_dat[batch], y_dat[batch])
         if bar_loop and barrier is not None:
             barrier.wait()
     t_1 = time.time()
