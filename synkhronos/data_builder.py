@@ -12,8 +12,29 @@ from .data_module import Data
 
 def data(value=None, var=None, dtype=None, ndim=None, shape=None,
          minibatch=False, force_cast=False, oversize=1, name=None):
-    """ Returns a Data object, which is the only type that synkhronos
-    functions can receive for Theano inputs.
+    """Returns a ``synkhronos.Data`` object, for data input to functions.
+    Similar to a Theano variable, Data objects have fixed ndim and dtype.  It
+    is optional to populate this object with actual data or assign a shape 
+    (induces memory allocation) at instantiation.
+    
+    Args:
+        value: Data values to be stored (e.g. numpy array)
+        var (Theano variable): To infer dtype and ndim
+        dtype: Can specify dtype (if not implied by var)
+        ndim: Can specify ndim (if not implied if not implied)
+        shape: Can specify shape (if not implied by value)
+        minibatch (bool, optional): Use for minibatch data inputs (compare
+            to full dataset inputs)
+        force_cast (bool, optional): If True, force value to specified dtype
+        oversize (int, [1,2], optional):  Factor for OS shared memory 
+            allocation in excess of given value or shape
+        name: As in Theano variables
+    
+    Returns:
+        synkhronos.Data: used for data input to functions
+    
+    Raises:
+        TypeError: If incomplete specification of dtype and ndim.
     """
     if var is not None:
         dtype = var.dtype

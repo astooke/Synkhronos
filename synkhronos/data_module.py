@@ -157,62 +157,112 @@ class DataHelpers(BaseData):
 
 
 class Data(DataHelpers):
-    """ User will hold some of these: required instead of numpy arrays as
-    inputs to functions or to collective communications. """
+    """Type of object required as inputs to functions (instead of numpy
+    arrays).  May also be used as inputs to some collectives.  Underlying
+    memory is OS shared memory, for multi-process access.  Presents a similar
+    interface as a numpy array, with some additions and restrictions.  The
+    terms "numpy wrapper" and "underlying numpy array" refer to the same
+    object, which is a view to the underlying memory allocation.
+    """
 
     def __getitem__(self, k):
+        """Provided to read from underlying numpy data array, as in array[k].
+        Full numpy indexing is supported.
+        """
         return self._data[k]
 
     def __setitem__(self, k, v):
+        """Provided to write to underlying numpy data array, as in array[k] =
+        x.  Full numpy indexing is supported.
+        """
         self._data[k] = v
 
     def __len__(self):
+        """Returns len() of underlying numpy data array."""
         return len(self._data)
 
     @property
     def dtype(self):
+        """Returns data type."""
         return self._dtype
 
     @property
     def ndim(self):
+        """Returns number of dimensions."""
         return self._data.ndim
 
     @property
     def shape(self):
+        """Returns shape of underlying numpy data array."""
         return self._data.shape
 
     @property
     def size(self):
+        """Returns size of underlying numpy data array."""
         return self._data.size
 
     @property
     def data(self):
+        """Returns underlying numpy data array.  In general, it is not
+        recommended to manipulate this object directly, aside from reading
+        from or writing to it (without changing shape).  It may be passed 
+        to other python processes and used as shared memory.
+        """
         return self._data
 
     @property
     def alloc_size(self):
+        """Returns the size of the underlying memory allocation (units: number
+        of items).  This may be larger than the size of the underlying numpy
+        array, which may occupy only a portion of the allocation (always
+        starting at the same memory address as the allocation).
+        """
         return self._alloc_size
 
     @property
     def name(self):
+        """Returns the name (may be None)"""
         return self._name
 
     @property
     def minibatch(self):
+        """Returns whether this data is treated as a minibatch.  When using the
+        ``batch`` kwarg in a function call, all minibatch data inputs will have their
+        selection indexes shifted so that the lowest overall index present in ``batch``
+        corresponds to index 0.  (It is enforced that all data is long enough to meet
+        all requested indexes.)
+        """
         return self._minibatch
 
     def set_value(self, input_data, force_cast=False, oversize=1):
-        """ Change data values and length.
-        If need be, reshape or reallocate shared memory.
-        Oversize only applies to underlying shared memory.  Numpy wrapper will
-        be of exact shape of 'input_data'.
+        """(Over)Write data values.  Change length, reshape, and/or reallocate shared
+        memory if necessary (applies eagerly in workers).  
+
+        Args:
+            input_data: e.g. numpy array, fed into numpy.asarray()
+            force_cast (bool, optional): force input data to existing dtype of data 
+                object, without error or warning
+            oversize (int, [1-2]): Factor for oversizing memory allocation
+                relative to input data size
+
+        Oversize applies only to underlying shared memory.  The numpy array wrapper
+        will have the exact shape of ``input_data``.  
         """
         input_data = self._condition_data(input_data, force_cast)
         self._update_array(input_data.shape, oversize)
         self._data[:] = input_data
 
     def set_length(self, length, oversize=1):
-        # NOTE: this will lose old data if need new allocation
+        """Change length of underlying numpy array.  Will induce memory
+        reallocation if necessary (for length larger than current memory).
+
+        Args:
+            length (int): New length of underlying numpy array
+            oversize (int, [1,2]): Used only if reallocating memory
+        
+        Warning:
+            Currently, memory reallocation loses old data.
+        """
         length = int(length)
         if length < 1:
             raise ValueError("Length must be a positive integer.")
@@ -221,18 +271,37 @@ class Data(DataHelpers):
         self._update_array(shape, oversize)
 
     def set_shape(self, shape, oversize=1):
-        # NOTE: this will lose old data if need new allocation
+        """Change shape of underlying numpy array.  Will induce memory
+        reallocation if necessary (for shape larger than current memory).
+        
+        Args:
+            shape (list, tuple): New shape of underlying numpy array
+            oversize (int, [1,2]): Used only if reallocating memory
+        
+        Warning:
+            Currently, memory reallocation loses old data.
+        """
         if len(shape) != self._ndim:
             raise ValueError("Cannot change number of dimensions.")
         self._update_array(shape, oversize)
 
     def condition_data(self, input_data, force_cast=False):
-        """ See resulting data would be used internally, or raise error. """
+        """Test the conditioning done to input data when calling ``set_value``
+        or ``synkhronos.data()``
+        
+        Args:
+            input_data: e.g., numpy array
+            force_cast (bool, optional): force data type
+        
+        Returns:
+            TYPE: numpy array of shape and dtype that would be used
+        """
         return self._condition_data(input_data, force_cast)
 
     def free_memory(self):
-        """ Removes references in master and workers
-        (only way to shrink alloc_size) """
+        """ Removes all references to underlying memory (and numpy wrapper) in
+        master and workers; the only way to shrink the allocation size.
+        """
         self._free_shmem()
         sync.ID.value = self._ID
         exct.launch(exct.DATA, exct.FREE)
