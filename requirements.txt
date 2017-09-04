@@ -1,4 +1,5 @@
 theano==0.9.0
 posix_ipc==1.0.0
 pyzmq==16.0.2
-pygpu==0.6
+pygpu==0.6.9
+
