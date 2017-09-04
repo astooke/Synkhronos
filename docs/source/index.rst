@@ -45,7 +45,7 @@ See the following pages for installation instructions, simple examples, and func
    pages/intro_example.rst
    pages/theano_shared.rst
    pages/deep_learning.rst
-   pages/functions.rst
+   pages/api.rst
 
 
 Indices and tables
