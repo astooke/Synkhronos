@@ -15,9 +15,7 @@ Synkhronos is a Python package for accelerating computation of Theano functions 
 
 When a Synkhronos function is called, it scatters the input data, executes the underlying Theano function simultaneously on all devices, and reduces the outputs back to the master process.  Functions may also update Theano shared memory variables (GPU-memory) locally on each device.  Synkhronos supports management of these variables across devices, either by reading/writing individually or through collective communications, such as all-reduce, broadcast etc.  Collectives are provided through the NVIDIA Collective Communications Library (NCCL, via PyGPU), or through CPU-based mechanisms.
 
-Using Multiprocessing, a separate python process is forked for each additional GPU.  Explicit function inputs are scattered via OS shared memory.  This facilitates greater speedup by minimizing and parallelizing memory copies.  Data may be scattered to GPU memories ahead of time for implicit function inputs; this is advantageous for data used repeatedly, device memory permitting.
-
-Barriers guard the execution, both start and finish, of any function or method that requires worker action.  This provides a simple programming framework, and lends the package its name.
+This package currently provides for single-node computing only.
 
 Function Batches and Slices
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -26,12 +24,12 @@ Synkhronos further extends the Theano interface by supporting indexed and sliced
 
 If the input data set is too large to compute on within the device memory, another optional input argument sets the number of "slices" each worker uses to compute over its assigned data.  Results are automatically accumulated over each input slice (each a separate call to the Theano function) within each worker before being reduced back to the master.  This is convenient for running validation or test measurement functions in machine learning, for example.
 
-Other Notes
-~~~~~~~~~~~
+Under the Hood
+~~~~~~~~~~~~~~
 
-This package is for single-node computing.
+Using Multiprocessing, a separate python process is forked for each additional GPU.  Explicit function inputs are scattered via OS shared memory.  This facilitates greater speedup by minimizing and parallelizing memory copies.  Data may be scattered to GPU memories ahead of time for implicit function inputs; this is advantageous for data used repeatedly, device memory permitting.
 
-.. hint::  Use Theano flags ``device=cpu`` and ``force_device=True`` (see :ref:`lasagne_import`).
+Barriers guard the execution, both start and finish, of any function or method that requires worker action.  This provides a simple programming framework, and lends the package its name.
 
 
 Contents:
@@ -48,8 +46,6 @@ See the following pages for installation instructions, simple examples, and func
    pages/theano_shared.rst
    pages/deep_learning.rst
    pages/functions.rst
-
-
 
 
 Indices and tables
