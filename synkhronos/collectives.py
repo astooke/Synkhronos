@@ -24,6 +24,15 @@ sync = None  # (assigned later by master)
 
 
 def broadcast(shared_vars, values=None, nccl=True):
+    """Broadcast master's values (or optionally input values) to all GPUs,
+    resulting in same values for Theano shared variables in all GPUs.
+
+    Args:
+        shared_vars (Theano shared variables): one or list/tuple
+        values (None, optional): if included, must provide one for each shared
+            variable input; otherwise existing value in master is used
+        nccl (bool, optional): If True, use NCCL if available
+    """
     exct.check_active()
     gpu_vars, cpu_vars, synk_vars, synk_datas = \
         process_bcast_vars_vals(shared_vars, values, nccl)
@@ -36,6 +45,16 @@ def broadcast(shared_vars, values=None, nccl=True):
 
 
 def scatter(shared_vars, values, batch=None):
+    """Scatter values across all workers.  Values are scattered as evenly as 
+    possible, by 0-th index.  Optional param ``batch`` can specify a subset of
+    the input data to be scattered.
+
+    Args:
+        shared_vars (Theano shared variables): one or list/tuple
+        values (synk.Data or numpy array): one value for each variable
+        batch (None, optional): Slice or list of indexes, selects a subset of
+            the input data (by 0-th index) to scatter
+    """
     exct.check_active()
     synk_vars, cpu_vars, synk_datas, cpu_datas = \
         process_scat_vars_vals(shared_vars, values)
@@ -46,6 +65,25 @@ def scatter(shared_vars, values, batch=None):
 
 
 def gather(shared_vars, nd_up=1, nccl=True):
+    """Gather and return values in Theano shared variables from all GPUs.  Does
+    not affect the values present in the variables.
+    
+    Args:
+        shared_vars (Theano shared variable): one, or list/tuple
+        nd_up (int, [0,1] optional): number of dimensions to add during
+            concatenation of results
+        nccl (bool, optional): If True, use NCCL if available
+
+    Warning:
+        If a Theano shared variable has different shapes on different GPUs (e.g. 
+        some have length one longer than others), then using NCCL yields slightly 
+        corrupted results.  (Extra rows will be added or left off so the same shape
+        is collected from each GPU.)  CPU-based gather will always show accurately
+        the actual values on each GPU, regardless of shape mismatch.
+
+    Returns:
+        array (or tuple): gathered values
+    """
     exct.check_active()
     gpu_vars, cpu_vars, gpu_idxs, cpu_idxs = process_coll_vars(shared_vars, nccl)
     results = [None] * (len(gpu_vars) + len(cpu_vars))
@@ -59,6 +97,13 @@ def gather(shared_vars, nd_up=1, nccl=True):
 
 
 def all_gather(shared_vars, nccl=True):
+    """All GPUs gather the values in each variable, and overwrites the variable's
+    data with the gathered data.  Cannot change ndims, but can change length.
+    
+    Args:
+        shared_vars (Theano shared variable): one, or list/tuple
+        nccl (bool, optional): If True, use NCCL if available.
+    """
     exct.check_active()
     gpu_vars, cpu_vars, _, _ = process_coll_vars(shared_vars, nccl)
     if gpu_vars:
@@ -68,6 +113,20 @@ def all_gather(shared_vars, nccl=True):
 
 
 def reduce(shared_vars, op="avg", in_place=True, nccl=True):
+    """Reduce the values of the shared variables from all GPUs into the
+    master. Worker's values are not affected; by default the master's value is
+    overwritten.
+    
+    Args:
+        shared_vars (Theano shared variable): one, or list/tuple
+        op (str, optional): reduce operation (avg, sum, min, max, prod)
+        in_place (bool, optional): If True, overwrite master variable data, 
+            otherwise return new array(s)
+        nccl (bool, optional): If True, use NCCL if available
+    
+    Returns:
+        array (or tuple): if ``in_place==False``, results of reduction(s)
+    """
     exct.check_active()
     gpu_vars, cpu_vars, gpu_idxs, cpu_idxs = process_coll_vars(shared_vars, nccl)
     gpu_results = reduce_comm(gpu_vars, op, in_place, gpu=True)
@@ -82,6 +141,14 @@ def reduce(shared_vars, op="avg", in_place=True, nccl=True):
 
 
 def all_reduce(shared_vars, op="avg", nccl=True):
+    """Reduce the values of the shared variables across all GPUs, overwriting 
+    the data stored in each GPU with the result.
+    
+    Args:
+        shared_vars (Theano shared variable): one, or list/tuple
+        op (str, optional): reduce operation (avg, sum, min, max, prod)
+        nccl (bool, optional): If True, use NCCL if available
+    """
     exct.check_active()
     gpu_vars, cpu_vars, _, _ = process_coll_vars(shared_vars, nccl)
     if gpu_vars:
@@ -91,6 +158,15 @@ def all_reduce(shared_vars, op="avg", nccl=True):
 
 
 def set_value(rank, shared_vars, values, batch=None):
+    """Set the value of Theano shared variable(s) in one GPU.
+    
+    Args:
+        rank (int): Which GPU to write to
+        shared_vars (Theano shared variable): one, or list/tuple
+        values (synk.Data, numpy array): one value for each variable
+        batch (None, optional): slice or list of indexes, selects subset of
+            input values to use
+    """
     exct.check_active()
     synk_vars, cpu_vars, synk_datas, cpu_datas = \
         process_scat_vars_vals(shared_vars, values)
@@ -101,6 +177,12 @@ def set_value(rank, shared_vars, values, batch=None):
 
 
 def get_value(rank, shared_vars):
+    """Get the value of Theano shared variable(s) from one GPU.
+    
+    Args:
+        rank (int): Which GPU to read from
+        shared_vars (Theano shared variable): one, or list/tuple
+    """
     exct.check_active()
     collectives_prep(shared_vars, rank=rank)
     exct.launch(exct.CPU_COLL, exct.GET_VALUE)
@@ -116,6 +198,11 @@ def get_value(rank, shared_vars):
 
 
 def get_lengths(shared_vars):
+    """Get lengths of Theano shared variable(s) from all GPUs.
+    
+    Args:
+        shared_vars (Theano shared variable): one, or list/tuple
+    """
     exct.check_active()
     collectives_prep(shared_vars)
     exct.launch(exct.CPU_COLL, exct.GET_LENGTHS)
@@ -133,6 +220,11 @@ def get_lengths(shared_vars):
 
 
 def get_shapes(shared_vars):
+    """Get shapes of Theano shared variable(s) from all GPUs.
+    
+    Args:
+        shared_vars (Theano shared variable): one, or list/tuple
+    """
     exct.check_active()
     collectives_prep(shared_vars)
     exct.launch(exct.CPU_COLL, exct.GET_SHAPES)

@@ -29,7 +29,7 @@ Under the Hood
 
 Using Multiprocessing, a separate python process is forked for each additional GPU.  Explicit function inputs are scattered via OS shared memory.  This facilitates greater speedup by minimizing and parallelizing memory copies.  Data may be scattered to GPU memories ahead of time for implicit function inputs; this is advantageous for data used repeatedly, device memory permitting.
 
-Barriers guard the execution, both start and finish, of any function or method that requires worker action.  This provides a simple programming framework, and lends the package its name.
+Barriers guard the execution, both start and finish, of any function or method that requires worker action.  This provides a programming framework safe from race conditions and lends the package its name.
 
 
 Contents:
