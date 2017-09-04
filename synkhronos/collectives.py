@@ -1,5 +1,8 @@
 
-from pygpu.gpuarray import GpuArray
+try:
+    from pygpu.gpuarray import GpuArray
+except ImportError:
+    pass  # (needed for autodocs to build w/o pygpu)
 
 from .data_module import Data
 from .scatterer import scatterer

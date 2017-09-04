@@ -2,7 +2,10 @@
 import numpy as np
 import multiprocessing as mp
 import theano
-from pygpu.gpuarray import GpuArray
+try:
+    from pygpu.gpuarray import GpuArray
+except ImportError:
+    pass  # (needed for autodocs to build without pygpu)
 
 
 def get_n_gpu():
