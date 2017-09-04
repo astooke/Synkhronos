@@ -173,7 +173,7 @@ class Data(DataHelpers):
 
     def __setitem__(self, k, v):
         """Provided to write to underlying numpy data array, as in array[k] =
-        x.  Full numpy indexing is supported.
+        v.  Full numpy indexing is supported.
         """
         self._data[k] = v
 

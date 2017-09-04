@@ -98,7 +98,7 @@ def gather(shared_vars, nd_up=1, nccl=True):
 
 def all_gather(shared_vars, nccl=True):
     """All GPUs gather the values in each variable, and overwrites the variable's
-    data with the gathered data.  Cannot change ndims, but can change length.
+    data with the gathered data (cannot change ndims).
     
     Args:
         shared_vars (Theano shared variable): one, or list/tuple
