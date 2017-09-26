@@ -90,18 +90,18 @@ class CpuCommMaster(object):
 
     def reduce(self, arr, op, dest=None):
         dtype = arr.dtype
-        shape = arr.shape
+        shape = (1,) if not arr.shape else arr.shape  # (recv scalar as array)
         recv_buf = np.empty((self.n, *shape), dtype=dtype)
         dest = np.empty(*shape, dtype=dtype) if dest is None else dest
         assert dest.dtype == dtype
-        assert dest.shape == shape
+        assert dest.shape == shape  # (can't use with scalar, that's OK)
         recv_buf[-1] = np.asarray(arr)
         for i, socket in enumerate(self.pair_sockets):
-            recv_buf[i] = recv_nd_array(socket, arr)
+            recv_buf[i] = recv_nd_array(socket)
         if op in ["sum", "avg"]:
             dest[:] = self.vec_ones.dot(recv_buf)  # parallel; np.mean is not
             if op == "avg":
-                dest /= self.n
+                dest *= (1. / self.n)
         elif op == "max":
             dest[:] = recv_buf.max(axis=0)
         elif op == "min":
@@ -110,6 +110,8 @@ class CpuCommMaster(object):
             dest[:] = recv_buf.prod(axis=0)
         else:
             raise ValueError("Unrecognized op: {}".format(op))
+        if not arr.shape:
+            dest = dest.reshape(())
         return dest
 
     def all_reduce(self, arr, op, dest=None):
